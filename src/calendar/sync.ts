@@ -14,6 +14,8 @@ export async function syncUserCalendars(
   db: Database,
   userId: string,
 ): Promise<{ syncedCount: number; errors: string[] }> {
+  console.log(`[sync] Starting calendar sync for user ${userId}`);
+
   const connections = db
     .query(
       "SELECT id, provider, calendar_email, sync_enabled, sync_cursor FROM calendar_connections WHERE user_id = ? AND sync_enabled = 1",
@@ -26,21 +28,27 @@ export async function syncUserCalendars(
     sync_cursor: string | null;
   }>;
 
+  console.log(`[sync] Found ${connections.length} enabled connection(s) for user ${userId}`);
+
   let totalSynced = 0;
   const errors: string[] = [];
 
   for (const conn of connections) {
     try {
+      console.log(`[sync] Syncing connection ${conn.id} (${conn.provider}/${conn.calendar_email})`);
       if (conn.provider === "google") {
         const count = await syncGoogleConnection(db, conn.id, userId, conn.calendar_email, conn.sync_cursor);
+        console.log(`[sync] Connection ${conn.id} synced ${count} events`);
         totalSynced += count;
       }
       // Microsoft sync not yet implemented — skip
     } catch (err: any) {
+      console.error(`[sync] Error syncing connection ${conn.id}: ${err.message}`);
       errors.push(`Sync error for ${conn.provider}/${conn.calendar_email}: ${err.message}`);
     }
   }
 
+  console.log(`[sync] Sync complete for user ${userId}: ${totalSynced} events across ${connections.length} connection(s), ${errors.length} error(s)`);
   return { syncedCount: totalSynced, errors };
 }
 
@@ -54,12 +62,11 @@ async function syncGoogleConnection(
   calendarEmail: string,
   syncCursor: string | null,
 ): Promise<number> {
-  const MIN_TIME_WINDOW_DAYS = 180; // 6 months in both directions
-
   let token: string;
   try {
     token = await ensureFreshToken(db, connectionId);
   } catch (err) {
+    console.error(`[sync] Token refresh failed for connection ${connectionId}: ${(err as Error).message}`);
     throw new Error(`Token refresh failed: ${(err as Error).message}`);
   }
 
@@ -68,13 +75,17 @@ async function syncGoogleConnection(
   const timeMin = new Date(now.getTime() - 90 * 86400000).toISOString();
   const timeMax = new Date(now.getTime() + 90 * 86400000).toISOString();
 
+  console.log(`[sync] Fetching events for ${calendarEmail} from ${timeMin.slice(0, 10)} to ${timeMax.slice(0, 10)}${syncCursor ? " (incremental)" : ""}`);
+
   let allEvents: GoogleCalendarEvent[] = [];
   let nextSyncToken: string | undefined;
   let pageToken: string | undefined;
   let currentSyncCursor = syncCursor ?? undefined;
+  let pageCount = 0;
 
   // Fetch events (paginated)
   do {
+    pageCount++;
     const result = await fetchGoogleCalendarEvents(token, calendarEmail, {
       timeMin,
       timeMax,
@@ -89,6 +100,8 @@ async function syncGoogleConnection(
     // After first page with sync token, don't keep passing it
     currentSyncCursor = undefined;
   } while (pageToken);
+
+  console.log(`[sync] Fetched ${allEvents.length} events across ${pageCount} page(s) for ${calendarEmail}`);
 
   // Upsert events into DB
   const upsertStmt = db.prepare(`
@@ -116,7 +129,10 @@ async function syncGoogleConnection(
       const status = event.status === "cancelled" ? "cancelled" : "confirmed";
       const recurrenceId = event.recurringEventId || null;
 
-      if (!startRaw || !endRaw) continue;
+      if (!startRaw || !endRaw) {
+        console.warn(`[sync] Skipping event ${externalId}: missing start/end time`);
+        continue;
+      }
 
       const id = crypto.randomUUID();
       upsertStmt.run(
@@ -136,6 +152,8 @@ async function syncGoogleConnection(
   });
   upsertMany();
 
+  console.log(`[sync] Upserted ${count} events into DB for connection ${connectionId}`);
+
   // Handle cancellations: if an event was cancelled, mark it as such
   // Google's incremental sync returns cancelled events with status='cancelled' -
   // they're already handled by the upsert above
@@ -145,6 +163,7 @@ async function syncGoogleConnection(
     "UPDATE calendar_connections SET sync_cursor = ?, last_synced_at = datetime('now') WHERE id = ?",
   ).run(nextSyncToken || null, connectionId);
 
+  console.log(`[sync] Updated sync_cursor for connection ${connectionId}${nextSyncToken ? "" : " (no new sync token)"}`);
   return count;
 }
 

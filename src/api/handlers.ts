@@ -453,14 +453,17 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     if (error) return error;
 
     try {
+      console.log(`[api] Manual sync requested for user ${user.id}`);
       const db = getDb();
       const result = await syncUserCalendars(db, user.id);
+      console.log(`[api] Manual sync result: ${result.syncedCount} events, ${result.errors.length} errors`);
       return json({
         syncedCount: result.syncedCount,
         lastSyncedAt: new Date().toISOString(),
         errors: result.errors.length > 0 ? result.errors : undefined,
       });
     } catch (err: any) {
+      console.error(`[api] Manual sync failed: ${err.message}`);
       return json({ error: err.message || "Sync failed" }, 500);
     }
   }
@@ -511,11 +514,15 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     }
 
     try {
+      console.log(`[api] Suggestions requested for user ${user.id} on ${date}`);
       const db = getDb();
-      await syncUserCalendars(db, user.id);
+      const syncResult = await syncUserCalendars(db, user.id);
+      console.log(`[api] Sync before suggestions: ${syncResult.syncedCount} events synced`);
       const result = generateSuggestions(db, user.id, date);
+      console.log(`[api] Generated ${result.suggestions.length} suggestions, ${result.stats.totalGapsFound} gaps found`);
       return json(result);
     } catch (err: any) {
+      console.error(`[api] Suggestions failed: ${err.message}`);
       return json({ error: err.message || "Failed to generate suggestions" }, 500);
     }
   }

@@ -31,6 +31,7 @@ function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<Record<string, { count: number; error?: string; timestamp: number }>>({});
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [prefs, setPrefs] = useState<UserPreferences>({
     prepBufferMin: 5,
@@ -122,14 +123,36 @@ function SettingsPage() {
 
   async function handleSyncNow(id: string) {
     setSyncingId(id);
+    // Clear old result for this connection
+    setSyncResult((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     try {
-      await fetch(`/api/calendar/connections/${id}/sync`, {
+      const res = await fetch(`/api/calendar/connections/${id}/sync`, {
         method: "POST",
         credentials: "include",
       });
+      const data = await res.json();
+      if (res.ok) {
+        setSyncResult((prev) => ({
+          ...prev,
+          [id]: { count: data.syncedCount || 0, timestamp: Date.now() },
+        }));
+      } else {
+        setSyncResult((prev) => ({
+          ...prev,
+          [id]: { count: 0, error: data.error || "Sync failed", timestamp: Date.now() },
+        }));
+      }
       await loadData();
-    } catch (err) {
+    } catch (err: any) {
       console.error("Sync failed:", err);
+      setSyncResult((prev) => ({
+        ...prev,
+        [id]: { count: 0, error: err.message || "Network error", timestamp: Date.now() },
+      }));
     }
     setSyncingId(null);
   }
@@ -227,6 +250,7 @@ function SettingsPage() {
                 <CalendarCard
                   key={conn.id}
                   conn={conn}
+                  syncResult={syncResult[conn.id]}
                   onDisconnect={handleDisconnect}
                   onToggleSync={handleToggleSync}
                   onSyncNow={handleSyncNow}
@@ -239,6 +263,7 @@ function SettingsPage() {
                 <CalendarCard
                   key={conn.id}
                   conn={conn}
+                  syncResult={syncResult[conn.id]}
                   onDisconnect={handleDisconnect}
                   onToggleSync={handleToggleSync}
                   onSyncNow={handleSyncNow}
@@ -397,12 +422,14 @@ function SettingsPage() {
 
 function CalendarCard({
   conn,
+  syncResult,
   onDisconnect,
   onToggleSync,
   onSyncNow,
   syncingId,
 }: {
   conn: CalendarConnection;
+  syncResult?: { count: number; error?: string; timestamp: number };
   onDisconnect: (id: string) => void;
   onToggleSync: (id: string) => void;
   onSyncNow: (id: string) => void;
@@ -460,6 +487,33 @@ function CalendarCard({
                 </span>
               )}
             </div>
+
+            {/* Sync result feedback */}
+            {syncResult && (
+              <div
+                className={`mt-2 text-xs font-medium px-2.5 py-1.5 rounded-lg inline-flex items-center gap-1.5 transition-all ${
+                  syncResult.error
+                    ? "bg-red-50 text-red-700"
+                    : "bg-emerald-50 text-emerald-700"
+                }`}
+              >
+                {syncResult.error ? (
+                  <>
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    {syncResult.error}
+                  </>
+                ) : (
+                  <>
+                    <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                    </svg>
+                    Synced {syncResult.count} event{syncResult.count !== 1 ? "s" : ""}
+                  </>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

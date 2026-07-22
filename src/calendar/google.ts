@@ -34,8 +34,11 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
+    console.error("[google] Token refresh failed: Google OAuth credentials not configured");
     throw new Error("Google OAuth credentials not configured");
   }
+
+  console.log("[google] Refreshing access token...");
 
   const body = new URLSearchParams({
     client_id: clientId,
@@ -52,6 +55,7 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{
 
   if (!res.ok) {
     const text = await res.text();
+    console.error(`[google] Token refresh failed: HTTP ${res.status} — ${text}`);
     throw new Error(`Google token refresh failed: ${res.status} ${text}`);
   }
 
@@ -60,6 +64,7 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{
     expires_in: number;
   };
 
+  console.log(`[google] Token refreshed successfully, expires in ${data.expires_in}s`);
   return {
     access_token: data.access_token,
     expires_in: data.expires_in,
@@ -98,6 +103,8 @@ export async function fetchGoogleCalendarEvents(
 
   const url = `${GOOGLE_CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}/events?${query.toString()}`;
 
+  console.log(`[google] Fetching events for calendar ${calendarId}${params.syncToken ? " (incremental)" : " (full)"}${params.pageToken ? " [page]" : ""}`);
+
   const res = await fetch(url, {
     headers: {
       Authorization: `Bearer ${accessToken}`,
@@ -107,6 +114,7 @@ export async function fetchGoogleCalendarEvents(
 
   if (!res.ok) {
     const text = await res.text();
+    console.error(`[google] Calendar API error: HTTP ${res.status} — ${text.slice(0, 500)}`);
     throw new Error(
       `Google Calendar API error: ${res.status} ${text}`,
     );
@@ -117,6 +125,9 @@ export async function fetchGoogleCalendarEvents(
     nextSyncToken?: string;
     nextPageToken?: string;
   };
+
+  const eventCount = data.items?.length ?? 0;
+  console.log(`[google] Received ${eventCount} events${data.nextPageToken ? " (more pages)" : ""}${data.nextSyncToken ? " (sync token available)" : ""}`);
 
   return {
     events: data.items ?? [],
@@ -144,6 +155,7 @@ export async function ensureFreshToken(
   } | null;
 
   if (!conn) {
+    console.error(`[google] Connection ${connectionId} not found in DB`);
     throw new Error(`Calendar connection ${connectionId} not found`);
   }
 
@@ -152,17 +164,23 @@ export async function ensureFreshToken(
     const expiresAt = new Date(conn.token_expires_at).getTime();
     const now = Date.now();
     if (expiresAt > now + 60000) {
+      console.log(`[google] Token still valid for connection ${connectionId} (expires ${conn.token_expires_at})`);
       return conn.access_token;
     }
+    console.log(`[google] Token expired or expiring soon for connection ${connectionId} (expires ${conn.token_expires_at})`);
+  } else {
+    console.log(`[google] No token_expires_at for connection ${connectionId}, will attempt refresh if refresh_token available`);
   }
 
   // Token expired or will expire soon — refresh it
   if (!conn.refresh_token) {
     // No refresh token — can't refresh
     // For now, return current token and hope it still works
+    console.warn(`[google] No refresh_token for connection ${connectionId}, returning current (possibly expired) token`);
     return conn.access_token;
   }
 
+  console.log(`[google] Refreshing token for connection ${connectionId}`);
   const tokens = await refreshGoogleToken(conn.refresh_token);
 
   const expiresAt = new Date(
@@ -173,5 +191,6 @@ export async function ensureFreshToken(
     "UPDATE calendar_connections SET access_token = ?, token_expires_at = ? WHERE id = ?",
   ).run(tokens.access_token, expiresAt, connectionId);
 
+  console.log(`[google] Token updated in DB for connection ${connectionId}, new expiry: ${expiresAt}`);
   return tokens.access_token;
 }

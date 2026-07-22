@@ -89,14 +89,17 @@ export function generateSuggestions(
 
   // ── Load events for target date ──
   const events = loadEventsForDate(db, userId, targetDate);
+  console.log(`[engine] Loaded ${events.length} events for user ${userId} on ${targetDate}`);
 
   // ── Edge case: no events ──
   if (events.length === 0) {
+    console.log(`[engine] No events found for ${targetDate} — generating empty day suggestions`);
     return generateEmptyDaySuggestions(db, userId, targetDate, prefs, breakTypes);
   }
 
   // ── Steps 1-5: Gap analysis ──
   const analysis = analyzeGaps(events, prefs, targetDate);
+  console.log(`[engine] Gap analysis: ${analysis.gaps.length} eligible gaps, ${analysis.deepWorkBlocks.length} deep work blocks, ${analysis.occupiedWindows.length} occupied windows`);
 
   // ── Steps 6-7: Place candidates ──
   const candidates = placeBreaks(
@@ -105,6 +108,7 @@ export function generateSuggestions(
     prefs.defaultBreakDurationMin,
     prefs.deepWorkThresholdMin,
   );
+  console.log(`[engine] Placed ${candidates.length} break candidates`);
 
   // ── Edge case: no candidates (back-to-back) ──
   if (candidates.length === 0) {
@@ -127,6 +131,7 @@ export function generateSuggestions(
   // ── Step 9: Select top N ──
   const sorted = scored.sort((a, b) => b.compositeScore - a.compositeScore);
   const selected = sorted.slice(0, prefs.maxBreaksPerDay);
+  console.log(`[engine] Selected ${selected.length} top-scored breaks (max ${prefs.maxBreaksPerDay} allowed)`);
 
   // ── Step 10: Persist ──
   // Delete existing pending suggestions for this user+date
