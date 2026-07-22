@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import BreathingPlayer from "~/components/BreathingPlayer";
 import QuoteCard from "~/components/QuoteCard";
 
@@ -205,6 +205,206 @@ function contextLabel(s: Suggestion): string {
   if (parts.length === 2) return `Between ${parts[0]} and ${parts[1]}`;
   if (parts.length === 1) return `After ${parts[0]}`;
   return `Open time`;
+}
+
+// ═══════════════════════════════════════════════
+// BREAK NOTIFICATIONS HOOK
+// ═══════════════════════════════════════════════
+
+function useBreakNotifications({
+  dailyData,
+  suggestionStates,
+  onAccept,
+  onStart,
+}: {
+  dailyData: DailySuggestions | null;
+  suggestionStates: Record<string, any>;
+  onAccept: (id: string) => void;
+  onStart: (id: string) => void;
+}) {
+  const notifiedRef = useRef<Set<string>>(new Set());
+  const lastActivityRef = useRef<number>(Date.now());
+  const handlersRef = useRef({ onAccept, onStart });
+  const statesRef = useRef(suggestionStates);
+  handlersRef.current = { onAccept, onStart };
+  statesRef.current = suggestionStates;
+
+  const [permission, setPermission] = useState<NotificationPermission>("default");
+  const [showBanner, setShowBanner] = useState(false);
+
+  // Check permission on mount
+  useEffect(() => {
+    if (typeof Notification === "undefined") return;
+    const perm = Notification.permission;
+    setPermission(perm);
+    if (perm === "default") {
+      setShowBanner(true);
+    }
+  }, []);
+
+  // Activity tracking (mouse, keyboard, click, scroll, touch)
+  useEffect(() => {
+    const update = () => {
+      lastActivityRef.current = Date.now();
+    };
+    const opts: AddEventListenerOptions = { passive: true, capture: true };
+    document.addEventListener("mousemove", update, opts);
+    document.addEventListener("keydown", update, opts);
+    document.addEventListener("click", update, opts);
+    document.addEventListener("scroll", update, opts);
+    document.addEventListener("touchstart", update, opts);
+    return () => {
+      document.removeEventListener("mousemove", update, opts);
+      document.removeEventListener("keydown", update, opts);
+      document.removeEventListener("click", update, opts);
+      document.removeEventListener("scroll", update, opts);
+      document.removeEventListener("touchstart", update, opts);
+    };
+  }, []);
+
+  // Request permission
+  const requestPermission = useCallback(async () => {
+    try {
+      const result = await Notification.requestPermission();
+      setPermission(result);
+      setShowBanner(false);
+    } catch {
+      // Browser doesn't support Notification API
+      setShowBanner(false);
+    }
+  }, []);
+
+  const dismissBanner = useCallback(() => setShowBanner(false), []);
+
+  // Notification watcher — every 30 seconds
+  useEffect(() => {
+    if (permission !== "granted" || !dailyData) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+
+      // Idle check — skip if user active in last 2 minutes
+      if (now - lastActivityRef.current < 2 * 60 * 1000) return;
+
+      // Filter eligible suggestions
+      const eligible = dailyData.suggestions.filter((s) => {
+        const state = statesRef.current[s.id];
+        if (
+          state?.status === "completed" ||
+          state?.status === "skipped" ||
+          state?.completed
+        )
+          return false;
+        if (notifiedRef.current.has(s.id)) return false;
+        const startTime = new Date(s.suggestedStart).getTime();
+        const diff = startTime - now;
+        return diff > 0 && diff <= 60_000;
+      });
+
+      if (eligible.length === 0) return;
+
+      // Multiple suggestions — only notify the highest-scored one
+      eligible.sort((a, b) => b.rankingScore - a.rankingScore);
+      const best = eligible[0];
+
+      const isBreathing = best.breakType === "breathing";
+      const title = isBreathing
+        ? "Time to breathe 🧘"
+        : "Quick break available 💬";
+      const body = isBreathing
+        ? `${best.durationMinutes}-minute breathing break`
+        : "Motivational quote waiting";
+
+      try {
+        const notification = new Notification(title, {
+          body,
+          tag: best.id,
+        });
+
+        notification.onclick = () => {
+          window.focus();
+
+          const currentState = statesRef.current[best.id];
+          if (
+            !currentState ||
+            currentState.status === "pending"
+          ) {
+            // Accept first, then start after a short delay
+            handlersRef.current.onAccept(best.id);
+            setTimeout(() => handlersRef.current.onStart(best.id), 600);
+          } else if (currentState.status === "accepted") {
+            handlersRef.current.onStart(best.id);
+          }
+
+          // Scroll to the suggestion card
+          setTimeout(() => {
+            const el = document.getElementById(`suggestion-${best.id}`);
+            el?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 900);
+        };
+
+        notifiedRef.current.add(best.id);
+      } catch {
+        // Notification failed silently (e.g., permission revoked in another tab)
+      }
+    }, 30_000);
+
+    return () => clearInterval(interval);
+  }, [permission, dailyData]);
+
+  // Reset notified set when dailyData changes (new day loaded)
+  useEffect(() => {
+    notifiedRef.current = new Set();
+  }, [dailyData?.date]);
+
+  return { permission, showBanner, requestPermission, dismissBanner };
+}
+
+// ═══════════════════════════════════════════════
+// NOTIFICATION PERMISSION BANNER
+// ═══════════════════════════════════════════════
+
+function NotificationBanner({
+  onRequest,
+  onDismiss,
+}: {
+  onRequest: () => void;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 mt-4">
+      <div className="flex items-center justify-between gap-4 rounded-xl bg-gradient-to-r from-emerald-50 via-amber-50 to-sky-50 p-4 shadow-sm ring-1 ring-emerald-200/60">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-2xl shrink-0">🔔</span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-gray-900">
+              Get notified when it&rsquo;s time for a break
+            </p>
+            <p className="text-xs text-gray-500">
+              Reclaim will let you know when a break window is opening
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            onClick={onRequest}
+            className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-emerald-200 transition hover:bg-emerald-700 active:scale-[0.98]"
+          >
+            Enable
+          </button>
+          <button
+            onClick={onDismiss}
+            className="rounded-lg p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition"
+            aria-label="Dismiss"
+          >
+            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── Main Dashboard Page ──
@@ -452,6 +652,18 @@ function DashboardPage() {
     }
   };
 
+  // ── Notification hook ──
+  const {
+    showBanner: showNotifBanner,
+    requestPermission,
+    dismissBanner,
+  } = useBreakNotifications({
+    dailyData,
+    suggestionStates,
+    onAccept: handleAccept,
+    onStart: handleStart,
+  });
+
   // ── Seeding dev calendar for testing ──
   const handleSeedCalendar = async () => {
     try {
@@ -497,6 +709,14 @@ function DashboardPage() {
         onToggleView={toggleView}
         timezone={user?.connectedCalendars?.[0]?.timezone ?? null}
       />
+
+      {/* Notification permission banner */}
+      {showNotifBanner && (
+        <NotificationBanner
+          onRequest={requestPermission}
+          onDismiss={dismissBanner}
+        />
+      )}
 
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-12">
         {/* ── No calendar CTA ── */}
@@ -1216,6 +1436,7 @@ function SuggestionCard({
 
   return (
     <div
+      id={`suggestion-${suggestion.id}`}
       className={`rounded-xl border transition-all duration-300 ${
         isFading ? "opacity-0 scale-95" : "opacity-100"
       } ${
