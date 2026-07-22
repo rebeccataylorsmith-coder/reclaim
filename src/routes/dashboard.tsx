@@ -738,8 +738,10 @@ function StatCard({
 }
 
 // ═══════════════════════════════════════════════
-// DAY TIMELINE
+// DAY TIMELINE — vertical hourly calendar view
 // ═══════════════════════════════════════════════
+
+const PX_PER_HOUR = 80; // pixels per hour in the calendar grid
 
 function DayTimeline({
   timeline,
@@ -757,6 +759,7 @@ function DayTimeline({
   const dayStart = timeToMinutes(workingHoursStart);
   const dayEnd = timeToMinutes(workingHoursEnd);
   const daySpan = dayEnd - dayStart;
+  const totalHeight = (daySpan / 60) * PX_PER_HOUR;
 
   if (loading) {
     return (
@@ -788,114 +791,180 @@ function DayTimeline({
   const isCurrentDay = isToday(selectedDate);
   const currentMin = nowMinutes();
   const showNowLine = isCurrentDay && currentMin >= dayStart && currentMin <= dayEnd;
-  const nowPct = showNowLine ? minutesToPct(currentMin, dayStart, dayEnd) : null;
+
+  // Position helper: converts minutes-since-midnight to pixels from grid top
+  const posY = (minutes: number): number => ((minutes - dayStart) / 60) * PX_PER_HOUR;
+
+  // Generate time slots (every 30 minutes) for labels and grid lines
+  const timeSlots: { label: string; isHour: boolean; minutes: number }[] = [];
+  for (let m = dayStart; m <= dayEnd; m += 30) {
+    const h = Math.floor(m / 60);
+    const mn = m % 60;
+    const ampm = h >= 12 ? "PM" : "AM";
+    const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+    timeSlots.push({
+      label: mn === 0 ? `${h12} ${ampm}` : `${h12}:${String(mn).padStart(2, "0")}`,
+      isHour: mn === 0,
+      minutes: m,
+    });
+  }
+
+  // Filter to only non-gap segments for block rendering (gaps are the background)
+  const blocks = timeline.filter((seg) => seg.type !== "gap");
 
   return (
     <div className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200/60 p-4 sm:p-6">
       <h3 className="text-sm font-semibold text-gray-500 uppercase tracking-wide mb-4">Timeline</h3>
 
-      {/* Time labels */}
-      <div className="flex justify-between text-xs text-gray-400 mb-2 px-1">
-        {[...Array(5)].map((_, i) => {
-          const minutes = dayStart + (daySpan / 4) * i;
-          const h = Math.floor(minutes / 60);
-          const m = Math.floor(minutes % 60);
-          const ampm = h >= 12 ? "PM" : "AM";
-          const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
-          return (
-            <span key={i}>{h12}:{String(m).padStart(2, "0")} {ampm}</span>
-          );
-        })}
-      </div>
-
-      {/* Timeline container */}
-      <div className="relative border border-gray-200 rounded-xl bg-gray-50/50 overflow-hidden" style={{ minHeight: "400px" }}>
-        {/* Hour grid lines */}
-        <div className="absolute inset-0 flex flex-col" style={{ paddingTop: "0px" }}>
-          {[...Array(Math.ceil(daySpan / 60) + 1)].map((_, i) => {
-            const pct = (i * 60 / daySpan) * 100;
-            if (pct > 100) return null;
-            return (
-              <div
-                key={i}
-                className="absolute w-full border-t border-gray-100"
-                style={{ top: `${pct}%` }}
-              />
-            );
-          })}
-        </div>
-
-        {/* Segments */}
-        <div className="relative py-1">
-          {timeline.map((seg, idx) => {
-            const segStart = timeToMinutes(seg.start);
-            const segEnd = timeToMinutes(seg.end);
-            const topPct = minutesToPct(segStart, dayStart, dayEnd);
-            const heightPct = minutesToPct(segEnd, dayStart, dayEnd) - topPct;
-
-            if (heightPct <= 0) return null;
-
-            const segmentColors: Record<string, string> = {
-              busy: "bg-gray-300 text-gray-700 border-gray-400",
-              buffer: "bg-gray-200 text-gray-600 border-gray-300",
-              gap: "bg-emerald-50 text-emerald-700 border-emerald-200",
-              break: "bg-gradient-to-r from-emerald-100 to-sky-100 text-emerald-800 border-emerald-300",
-            };
-
-            const baseStyle = segmentColors[seg.type] || segmentColors.gap;
-
-            return (
-              <div
-                key={idx}
-                className={`relative mx-3 rounded-md border px-3 py-1.5 mb-0.5 ${baseStyle} transition hover:shadow-sm`}
-                style={{
-                  minHeight: `${Math.max(heightPct * 0.7, 2)}%`,
-                  height: `${Math.max(heightPct * 0.85, 2)}%`,
-                }}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-medium truncate">
-                    {seg.type === "break" && (seg.label === "Breathe" ? "🫁 " : seg.label === "Quote" ? "💬 " : "🧘 ")}
-                    {seg.label}
-                  </span>
-                  <span className="text-xs opacity-60 shrink-0">{seg.start} – {seg.end}</span>
+      {/* Scrollable calendar container */}
+      <div
+        className="overflow-y-auto rounded-xl border border-gray-200 shadow-inner"
+        style={{ maxHeight: "min(75vh, 800px)" }}
+      >
+        <div className="flex" style={{ height: totalHeight, minHeight: 400 }}>
+          {/* ── Time labels column (fixed ~60px) ── */}
+          <div className="w-[60px] shrink-0 relative bg-gray-50/60 select-none">
+            {timeSlots.map((slot, i) => {
+              const top = posY(slot.minutes) - 7;
+              // Skip labels that would render above the top
+              if (top < -2 && i > 0) return null;
+              return (
+                <div
+                  key={i}
+                  className={`absolute right-2 text-xs whitespace-nowrap leading-none ${
+                    slot.isHour
+                      ? "text-gray-500 font-medium"
+                      : "text-gray-400/70"
+                  }`}
+                  style={{ top }}
+                >
+                  {slot.label}
                 </div>
-
-                {/* Buffer diagonal stripes */}
-                {seg.type === "buffer" && (
-                  <div
-                    className="absolute inset-0 rounded-md opacity-20"
-                    style={{
-                      backgroundImage: "repeating-linear-gradient(-45deg, transparent, transparent 4px, currentColor 4px, currentColor 6px)",
-                    }}
-                  />
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Current time indicator */}
-        {showNowLine && nowPct !== null && (
-          <div
-            className="absolute left-0 right-0 z-20 flex items-center pointer-events-none"
-            style={{ top: `${nowPct}%` }}
-          >
-            <div className="h-3 w-3 rounded-full bg-red-500 shadow-md -ml-1.5" />
-            <div className="flex-1 border-t-2 border-red-500 shadow-sm" />
-            <span className="text-[10px] font-bold text-red-600 bg-white px-1.5 py-0.5 rounded shadow-sm mr-1">
-              Now
-            </span>
+              );
+            })}
           </div>
-        )}
+
+          {/* ── Grid area ── */}
+          <div
+            className="flex-1 relative bg-gradient-to-b from-emerald-50/30 via-white to-white"
+            style={{ minWidth: 0 }}
+          >
+            {/* Hour grid lines (solid, faint) */}
+            {timeSlots
+              .filter((s) => s.isHour)
+              .map((slot, i) => (
+                <div
+                  key={`hl-${i}`}
+                  className="absolute left-0 right-0 border-t border-gray-200/70"
+                  style={{ top: posY(slot.minutes) }}
+                />
+              ))}
+
+            {/* Half-hour grid lines (dashed, very faint) */}
+            {timeSlots
+              .filter((s) => !s.isHour)
+              .map((slot, i) => (
+                <div
+                  key={`hh-${i}`}
+                  className="absolute left-0 right-0 border-t border-dashed border-gray-100/60"
+                  style={{ top: posY(slot.minutes) }}
+                />
+              ))}
+
+            {/* ── Event / buffer / break blocks ── */}
+            {blocks.map((seg, idx) => {
+              const segStart = timeToMinutes(seg.start);
+              const segEnd = timeToMinutes(seg.end);
+              const top = posY(segStart);
+              const height = posY(segEnd) - top;
+              const effectiveHeight = Math.max(height, 22); // min visible height
+
+              return (
+                <div
+                  key={idx}
+                  className="absolute left-1 right-1 z-10"
+                  style={{ top, height: effectiveHeight }}
+                >
+                  {/* Busy (meeting) — solid block with coloured left accent */}
+                  {seg.type === "busy" && (
+                    <div className="h-full bg-blue-100/90 border-l-[3px] border-blue-500 rounded-r-lg flex items-center px-2.5 shadow-sm">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-blue-900 truncate leading-tight">
+                          {seg.label}
+                        </p>
+                        <p className="text-[10px] text-blue-500/80 leading-tight">
+                          {seg.start} – {seg.end}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Buffer (prep/follow-up) — striped, lighter */}
+                  {seg.type === "buffer" && (
+                    <div className="h-full relative bg-amber-50/80 border border-dashed border-amber-300/50 rounded-lg flex items-center px-2.5 overflow-hidden">
+                      <div
+                        className="absolute inset-0 opacity-[0.07]"
+                        style={{
+                          backgroundImage:
+                            "repeating-linear-gradient(-45deg, transparent, transparent 3px, #b45309 3px, #b45309 5px)",
+                        }}
+                      />
+                      <div className="relative min-w-0">
+                        <p className="text-xs font-medium text-amber-800 truncate leading-tight">
+                          {seg.label}
+                        </p>
+                        <p className="text-[10px] text-amber-600/80 leading-tight">
+                          {seg.start} – {seg.end}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Break — emerald/sky gradient, stands out */}
+                  {seg.type === "break" && (
+                    <div className="h-full bg-gradient-to-r from-emerald-100 via-emerald-50 to-sky-100 border-l-[3px] border-emerald-400 rounded-r-lg flex items-center px-2.5 shadow-sm">
+                      <div className="min-w-0">
+                        <p className="text-xs font-semibold text-emerald-800 truncate leading-tight">
+                          {seg.label === "Breathe"
+                            ? "🫁 "
+                            : seg.label === "Quote"
+                              ? "💬 "
+                              : "🧘 "}
+                          {seg.label}
+                        </p>
+                        <p className="text-[10px] text-emerald-600/80 leading-tight">
+                          {seg.start} – {seg.end}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* ── Current time indicator (today only) ── */}
+            {showNowLine && (
+              <div
+                className="absolute left-0 right-0 z-30 flex items-center pointer-events-none"
+                style={{ top: posY(currentMin) }}
+              >
+                <div className="h-3 w-3 rounded-full bg-red-500 shadow-md -ml-1.5 shrink-0" />
+                <div className="flex-1 border-t-[1.5px] border-red-500" />
+                <span className="text-[10px] font-bold text-red-600 bg-white/90 px-1.5 py-0.5 rounded shadow-sm mr-1 shrink-0">
+                  Now
+                </span>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Legend */}
       <div className="flex flex-wrap gap-3 mt-4 text-xs">
-        <LegendItem color="bg-gray-300" label="Busy" />
-        <LegendItem color="bg-gray-200" label="Buffer" hasStripes />
-        <LegendItem color="bg-emerald-50 border-emerald-200" label="Gap" />
-        <LegendItem color="bg-gradient-to-r from-emerald-100 to-sky-100" label="Break" />
+        <LegendItem color="bg-blue-100 border-l-[3px] border-blue-500" label="Busy" />
+        <LegendItem color="bg-amber-100 border border-dashed border-amber-300" label="Buffer" hasStripes />
+        <LegendItem color="bg-gradient-to-r from-emerald-100 to-sky-100 border-l-[3px] border-emerald-400" label="Break" />
+        <LegendItem color="bg-gradient-to-b from-emerald-50/30 to-white border border-gray-200" label="Gap (available)" />
       </div>
     </div>
   );
