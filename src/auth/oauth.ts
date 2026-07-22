@@ -5,23 +5,44 @@ const GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo";
 const REDIRECT_URI =
   "https://e0746cfaa6a73d124ecfa16b31664acd.ctonew.app/api/auth/oauth/callback";
 
-const SCOPES = [
+const LOGIN_SCOPES = ["email", "profile"].join(" ");
+const CALENDAR_SCOPES = [
   "https://www.googleapis.com/auth/calendar.readonly",
   "email",
   "profile",
 ].join(" ");
 
-export function getGoogleAuthURL(): string {
+export type OAuthPurpose = "login" | "connect_calendar";
+
+export interface GoogleAuthOptions {
+  purpose: OAuthPurpose;
+}
+
+function encodeState(purpose: OAuthPurpose): string {
+  return `purpose=${purpose}&nonce=${crypto.randomUUID().slice(0, 8)}`;
+}
+
+export function decodeState(state: string): OAuthPurpose {
+  const params = new URLSearchParams(state);
+  const purpose = params.get("purpose");
+  if (purpose === "connect_calendar") return "connect_calendar";
+  return "login";
+}
+
+export function getGoogleAuthURL(options: GoogleAuthOptions = { purpose: "login" }): string {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   if (!clientId) throw new Error("GOOGLE_CLIENT_ID not set");
+
+  const scope = options.purpose === "connect_calendar" ? CALENDAR_SCOPES : LOGIN_SCOPES;
 
   const params = new URLSearchParams({
     client_id: clientId,
     redirect_uri: REDIRECT_URI,
     response_type: "code",
-    scope: SCOPES,
+    scope,
     access_type: "offline",
     prompt: "consent",
+    state: encodeState(options.purpose),
   });
 
   return `${GOOGLE_AUTH_URL}?${params.toString()}`;

@@ -16,6 +16,7 @@ import {
 } from "../auth/session";
 import {
   getGoogleAuthURL,
+  decodeState,
   exchangeGoogleCode,
   getGoogleUserInfo,
 } from "../auth/oauth";
@@ -70,7 +71,6 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
       const db = getDb();
 
-      // Check for existing user
       const existing = db.query("SELECT id FROM users WHERE email = ?").get(body.email.toLowerCase());
       if (existing) {
         return json({ error: "Email already registered" }, 409);
@@ -194,19 +194,20 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     });
   }
 
-  // GET /api/auth/oauth/google — redirect to Google OAuth
+  // GET /api/auth/oauth/google — login-only OAuth (no calendar scope)
   if (url.pathname === "/api/auth/oauth/google" && req.method === "GET") {
     try {
-      const authURL = getGoogleAuthURL();
+      const authURL = getGoogleAuthURL({ purpose: "login" });
       return redirect(authURL);
     } catch (err) {
       return json({ error: "OAuth configuration error" }, 500);
     }
   }
 
-  // GET /api/auth/oauth/callback — handle Google callback
+  // GET /api/auth/oauth/callback — handle Google OAuth callback for BOTH login and calendar connection
   if (url.pathname === "/api/auth/oauth/callback" && req.method === "GET") {
     const code = url.searchParams.get("code");
+    const state = url.searchParams.get("state") || "";
     const error = url.searchParams.get("error");
 
     if (error) {
@@ -217,70 +218,87 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
       return redirect("/auth/login?error=missing_code");
     }
 
+    const purpose = state ? decodeState(state) : "login";
+
     try {
       const tokens = await exchangeGoogleCode(code);
       const googleUser = await getGoogleUserInfo(tokens.access_token);
-
       const db = getDb();
 
-      // Find or create user
-      let user = db.query(
-        "SELECT id, email, display_name, oauth_provider, oauth_subject, avatar_url FROM users WHERE oauth_subject = ? AND oauth_provider = 'google'"
-      ).get(googleUser.id) as any;
-
-      if (!user) {
-        // Check if email already exists
-        const emailUser = db.query(
-          "SELECT id FROM users WHERE email = ?"
-        ).get(googleUser.email);
-
-        if (emailUser) {
-          // Link OAuth to existing user
-          db.query(
-            "UPDATE users SET oauth_provider = 'google', oauth_subject = ?, avatar_url = COALESCE(avatar_url, ?), updated_at = datetime('now') WHERE id = ?"
-          ).run(googleUser.id, googleUser.picture, (emailUser as any).id);
-          user = { id: (emailUser as any).id, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
-        } else {
-          // Create new user
-          const userId = crypto.randomUUID();
-          db.query(
-            `INSERT INTO users (id, email, display_name, oauth_provider, oauth_subject, avatar_url)
-             VALUES (?, ?, ?, 'google', ?, ?)`
-          ).run(userId, googleUser.email, googleUser.name, googleUser.id, googleUser.picture);
-          user = { id: userId, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
+      // ── CALENDAR CONNECTION FLOW ──
+      if (purpose === "connect_calendar") {
+        // Must be authenticated
+        const sessionUser = getUserFromRequest(req);
+        if (!sessionUser) {
+          return redirect("/auth/login?error=not_authenticated");
         }
+
+        const expiresAt = tokens.expires_in
+          ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+          : null;
+
+        // Check if connection already exists for this user + provider + email
+        const existingConn = db.query(
+          "SELECT id FROM calendar_connections WHERE user_id = ? AND provider = 'google' AND calendar_email = ?"
+        ).get(sessionUser.id, googleUser.email);
+
+        if (existingConn) {
+          db.query(
+            `UPDATE calendar_connections
+             SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
+                 token_expires_at = ?, last_synced_at = NULL
+             WHERE id = ?`
+          ).run(tokens.access_token, tokens.refresh_token, expiresAt, (existingConn as any).id);
+        } else {
+          db.query(
+            `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at)
+             VALUES (?, ?, 'google', ?, ?, ?, ?)`
+          ).run(crypto.randomUUID(), sessionUser.id, googleUser.email, tokens.access_token, tokens.refresh_token, expiresAt);
+        }
+
+        return redirect("/settings?connected=google");
       }
 
-      // Store calendar connection
-      const expiresAt = tokens.expires_in
-        ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
-        : null;
+      // ── LOGIN FLOW ──
+      if (purpose === "login") {
+        // Find or create user — NO auto calendar connection
+        let user = db.query(
+          "SELECT id, email, display_name, oauth_provider, oauth_subject, avatar_url FROM users WHERE oauth_subject = ? AND oauth_provider = 'google'"
+        ).get(googleUser.id) as any;
 
-      // Check if connection already exists
-      const existingConn = db.query(
-        "SELECT id FROM calendar_connections WHERE user_id = ? AND provider = 'google' AND calendar_email = ?"
-      ).get(user.id, googleUser.email);
+        if (!user) {
+          const emailUser = db.query(
+            "SELECT id FROM users WHERE email = ?"
+          ).get(googleUser.email);
 
-      if (existingConn) {
-        db.query(
-          `UPDATE calendar_connections
-           SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
-               token_expires_at = ?, last_synced_at = NULL
-           WHERE id = ?`
-        ).run(tokens.access_token, tokens.refresh_token, expiresAt, (existingConn as any).id);
-      } else {
-        db.query(
-          `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at)
-           VALUES (?, ?, 'google', ?, ?, ?, ?)`
-        ).run(crypto.randomUUID(), user.id, googleUser.email, tokens.access_token, tokens.refresh_token, expiresAt);
+          if (emailUser) {
+            db.query(
+              "UPDATE users SET oauth_provider = 'google', oauth_subject = ?, avatar_url = COALESCE(avatar_url, ?), updated_at = datetime('now') WHERE id = ?"
+            ).run(googleUser.id, googleUser.picture, (emailUser as any).id);
+            user = { id: (emailUser as any).id, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
+          } else {
+            const userId = crypto.randomUUID();
+            db.query(
+              `INSERT INTO users (id, email, display_name, oauth_provider, oauth_subject, avatar_url)
+               VALUES (?, ?, ?, 'google', ?, ?)`
+            ).run(userId, googleUser.email, googleUser.name, googleUser.id, googleUser.picture);
+            user = { id: userId, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
+          }
+        } else {
+          // Update avatar on each login
+          db.query(
+            "UPDATE users SET avatar_url = ?, updated_at = datetime('now') WHERE id = ?"
+          ).run(googleUser.picture, user.id);
+        }
+
+        // Create session (login)
+        const session = createSession(db, user.id);
+
+        const response = redirect("/dashboard");
+        response.headers.set("Set-Cookie", getSessionCookie(session.token));
+        return response;
       }
 
-      // Create session
-      const session = createSession(db, user.id);
-
-      const response = redirect("/dashboard");
-      response.headers.set("Set-Cookie", getSessionCookie(session.token));
-      return response;
     } catch (err: any) {
       console.error("OAuth callback error:", err);
       return redirect("/auth/login?error=oauth_failed");
@@ -355,6 +373,19 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
   // CALENDAR CONNECTIONS (require auth)
   // ═══════════════════════════════════════════
 
+  // GET /api/calendar/oauth/google — start calendar-only OAuth flow (requires auth)
+  if (url.pathname === "/api/calendar/oauth/google" && req.method === "GET") {
+    const { user, error } = requireUser(req);
+    if (error) return error;
+
+    try {
+      const authURL = getGoogleAuthURL({ purpose: "connect_calendar" });
+      return redirect(authURL);
+    } catch (err) {
+      return json({ error: "OAuth configuration error" }, 500);
+    }
+  }
+
   // GET /api/calendar/connections
   if (url.pathname === "/api/calendar/connections" && req.method === "GET") {
     const { user, error } = requireUser(req);
@@ -391,13 +422,35 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     return json({ ok: true });
   }
 
-  // POST /api/calendar/connections/:id/sync
-  if (url.pathname.match(/^\/api\/calendar\/connections\/[^/]+\/sync$/) && req.method === "POST") {
+  // PUT /api/calendar/connections/:id/toggle-sync
+  if (url.pathname.match(/^\/api\/calendar\/connections\/[^/]+\/toggle-sync$/) && req.method === "PUT") {
     const { user, error } = requireUser(req);
     if (error) return error;
 
     const parts = url.pathname.split("/");
     const connectionId = parts[parts.length - 2];
+
+    const db = getDb();
+    const conn = db.query(
+      "SELECT sync_enabled FROM calendar_connections WHERE id = ? AND user_id = ?"
+    ).get(connectionId, user.id) as { sync_enabled: number } | null;
+
+    if (!conn) {
+      return json({ error: "Connection not found" }, 404);
+    }
+
+    const newState = conn.sync_enabled === 1 ? 0 : 1;
+    db.query(
+      "UPDATE calendar_connections SET sync_enabled = ? WHERE id = ? AND user_id = ?"
+    ).run(newState, connectionId, user.id);
+
+    return json({ syncEnabled: newState === 1 });
+  }
+
+  // POST /api/calendar/connections/:id/sync
+  if (url.pathname.match(/^\/api\/calendar\/connections\/[^/]+\/sync$/) && req.method === "POST") {
+    const { user, error } = requireUser(req);
+    if (error) return error;
 
     try {
       const db = getDb();
@@ -459,9 +512,7 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
     try {
       const db = getDb();
-      // First, sync calendars to get fresh events
       await syncUserCalendars(db, user.id);
-      // Then generate suggestions
       const result = generateSuggestions(db, user.id, date);
       return json(result);
     } catch (err: any) {
@@ -635,20 +686,17 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
     const db = getDb();
 
-    // Total breaks completed
     const totalRow = db.query(
       `SELECT COUNT(*) as c FROM break_completions
        WHERE user_id = ? AND completed_at IS NOT NULL
        AND date(created_at) >= ? AND date(created_at) <= ?`,
     ).get(user.id, startDate, endDate) as { c: number };
 
-    // Average per day
     const days = Math.max(1, Math.ceil(
       (new Date(endDate).getTime() - new Date(startDate).getTime()) / 86400000
     ) + 1);
     const avgPerDay = Math.round((totalRow.c / days) * 10) / 10;
 
-    // Favorite exercise
     const favExercise = db.query(
       `SELECT be.title, COUNT(*) as c FROM break_completions bc
        JOIN breathing_exercises be ON bc.breathing_exercise_id = be.id
@@ -657,7 +705,6 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
        GROUP BY be.title ORDER BY c DESC LIMIT 1`,
     ).get(user.id, startDate, endDate) as { title: string; c: number } | null;
 
-    // Daily breakdown
     const dailyBreakdown = db.query(
       `SELECT date(created_at) as day, COUNT(*) as count FROM break_completions
        WHERE user_id = ? AND completed_at IS NOT NULL
@@ -665,12 +712,10 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
        GROUP BY day ORDER BY day`,
     ).all(user.id, startDate, endDate) as Array<{ day: string; count: number }>;
 
-    // Current streak
     const streak = db.query(
       "SELECT current_length, best_length FROM streaks WHERE user_id = ?",
     ).get(user.id) as { current_length: number; best_length: number } | null;
 
-    // Suggestions accepted rate
     const suggestionsRow = db.query(
       `SELECT COUNT(*) as total,
               SUM(CASE WHEN status = 'accepted' OR status = 'completed' THEN 1 ELSE 0 END) as acted
@@ -706,7 +751,6 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     const db = getDb();
     const today = new Date().toISOString().slice(0, 10);
 
-    // Check for existing connection, or create a stub
     let connection = db.query(
       "SELECT id FROM calendar_connections WHERE user_id = ? AND provider = 'google' LIMIT 1",
     ).get(user.id) as { id: string } | null;
@@ -720,7 +764,6 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
       connection = { id: connId };
     }
 
-    // Create a variety of events simulating a realistic day
     const events: Array<{
       id: string;
       title: string;
@@ -729,29 +772,17 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
       isAllDay: boolean;
       status: string;
     }> = [
-      // Morning standup
       { id: "dev-1", title: "Daily Standup", start: "09:00", end: "09:15", isAllDay: false, status: "confirmed" },
-      // Right after: a 1hr meeting
       { id: "dev-2", title: "Sprint Planning", start: "09:30", end: "10:30", isAllDay: false, status: "confirmed" },
-      // Gap until 11:00 — potential break
-      // Deep work block: 2 hours
       { id: "dev-3", title: "Deep Work: Feature Build", start: "11:00", end: "13:00", isAllDay: false, status: "confirmed" },
-      // Lunch break (approved)
       { id: "dev-4", title: "Lunch", start: "13:00", end: "13:45", isAllDay: false, status: "confirmed" },
-      // Afternoon meeting
       { id: "dev-5", title: "Design Review", start: "14:00", end: "15:00", isAllDay: false, status: "confirmed" },
-      // Another potential gap
-      // Late meeting
       { id: "dev-6", title: "1:1 with Manager", start: "15:30", end: "16:00", isAllDay: false, status: "confirmed" },
-      // End-of-day wrap-up
       { id: "dev-7", title: "Wrap-up & Planning", start: "16:30", end: "17:00", isAllDay: false, status: "confirmed" },
-      // All-day event (should be ignored)
       { id: "dev-8", title: "Company All-Hands (All Day)", start: "00:00", end: "23:59", isAllDay: true, status: "confirmed" },
-      // Tentative event (should be ignored by filter)
       { id: "dev-9", title: "Optional Workshop", start: "11:00", end: "12:00", isAllDay: false, status: "tentative" },
     ];
 
-    // Delete existing dev events for today
     db.query(
       "DELETE FROM calendar_events WHERE user_id = ? AND external_id LIKE 'dev-%' AND date(start_time) = ?",
     ).run(user.id, today);
