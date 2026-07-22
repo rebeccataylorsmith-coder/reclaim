@@ -33,6 +33,7 @@ function SettingsPage() {
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<Record<string, { count: number; error?: string; timestamp: number }>>({});
   const [showAddMenu, setShowAddMenu] = useState(false);
+  const [statusMessage, setStatusMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [prefs, setPrefs] = useState<UserPreferences>({
     prepBufferMin: 5,
     followUpBufferMin: 10,
@@ -44,15 +45,31 @@ function SettingsPage() {
     preferredBreakTypes: "breathing,quote",
   });
 
-  // Check URL for "connected" param
+  // Check URL for "connected" and "error" params
   useEffect(() => {
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
+      const url = new URL(window.location.href);
+      let changed = false;
+
       if (params.get("connected") === "google") {
-        // Clean the URL
-        const url = new URL(window.location.href);
+        setStatusMessage({ type: "success", text: "Google Calendar connected successfully!" });
         url.searchParams.delete("connected");
+        changed = true;
+      }
+      if (params.get("error") === "missing_calendar_scope") {
+        setStatusMessage({
+          type: "error",
+          text: "Calendar connection failed: the Google account did not grant calendar access. Please try again and ensure you approve the calendar permission.",
+        });
+        url.searchParams.delete("error");
+        changed = true;
+      }
+
+      if (changed) {
         window.history.replaceState({}, "", url.toString());
+        // Auto-dismiss after 6s
+        setTimeout(() => setStatusMessage(null), 6000);
       }
     }
   }, []);
@@ -191,6 +208,20 @@ function SettingsPage() {
             ← Dashboard
           </a>
         </div>
+
+        {/* Status message banner */}
+        {statusMessage && (
+          <div
+            className={`mb-6 rounded-lg px-4 py-3 text-sm font-medium ${
+              statusMessage.type === "success"
+                ? "bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200"
+                : "bg-red-50 text-red-800 ring-1 ring-red-200"
+            }`}
+          >
+            {statusMessage.type === "success" ? "✅ " : "⚠️ "}
+            {statusMessage.text}
+          </div>
+        )}
 
         {/* Calendar Connections */}
         <section className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200/60 p-6 mb-8">

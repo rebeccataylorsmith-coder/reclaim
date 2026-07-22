@@ -63,6 +63,7 @@ export function initSchema(db: Database): void {
       access_token      TEXT NOT NULL,
       refresh_token     TEXT,
       token_expires_at  TEXT,
+      token_scope       TEXT,
       sync_enabled      INTEGER NOT NULL DEFAULT 1,
       last_synced_at    TEXT,
       sync_cursor       TEXT,
@@ -151,6 +152,14 @@ export function initSchema(db: Database): void {
       updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
     );
   `);
+
+  // ── Migrations for existing databases ──
+  // Add token_scope column if missing (added 2026-07-22)
+  try {
+    db.exec("ALTER TABLE calendar_connections ADD COLUMN token_scope TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
 
   const exerciseCount = db.query("SELECT COUNT(*) as c FROM breathing_exercises").get() as { c: number } | null;
   if (exerciseCount && exerciseCount.c === 0) {

@@ -70,10 +70,10 @@ async function syncGoogleConnection(
     throw new Error(`Token refresh failed: ${(err as Error).message}`);
   }
 
-  // Time range: last 90 days through next 90 days
+  // Time range: ±7 days from today (narrow window for performance & relevance)
   const now = new Date();
-  const timeMin = new Date(now.getTime() - 90 * 86400000).toISOString();
-  const timeMax = new Date(now.getTime() + 90 * 86400000).toISOString();
+  const timeMin = new Date(now.getTime() - 7 * 86400000).toISOString();
+  const timeMax = new Date(now.getTime() + 7 * 86400000).toISOString();
 
   console.log(`[sync] Fetching events for ${calendarEmail} from ${timeMin.slice(0, 10)} to ${timeMax.slice(0, 10)}${syncCursor ? " (incremental)" : ""}`);
 
@@ -86,7 +86,7 @@ async function syncGoogleConnection(
   // Fetch events (paginated)
   do {
     pageCount++;
-    const result = await fetchGoogleCalendarEvents(token, calendarEmail, {
+    const result = await fetchGoogleCalendarEvents(token, "primary", {
       timeMin,
       timeMax,
       syncToken: currentSyncCursor,

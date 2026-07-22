@@ -233,6 +233,14 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
           return redirect("/auth/login?error=not_authenticated");
         }
 
+        // Verify the token actually has calendar scope
+        const grantedScope = tokens.scope || "";
+        const hasCalendarScope = grantedScope.includes("calendar.readonly");
+        if (!hasCalendarScope) {
+          console.error(`[oauth] Calendar connection missing calendar scope. Granted: "${grantedScope}"`);
+          return redirect("/settings?error=missing_calendar_scope");
+        }
+
         const expiresAt = tokens.expires_in
           ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
           : null;
@@ -246,14 +254,14 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
           db.query(
             `UPDATE calendar_connections
              SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
-                 token_expires_at = ?, last_synced_at = NULL
+                 token_expires_at = ?, token_scope = ?, last_synced_at = NULL
              WHERE id = ?`
-          ).run(tokens.access_token, tokens.refresh_token, expiresAt, (existingConn as any).id);
+          ).run(tokens.access_token, tokens.refresh_token, expiresAt, grantedScope, (existingConn as any).id);
         } else {
           db.query(
-            `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at)
-             VALUES (?, ?, 'google', ?, ?, ?, ?)`
-          ).run(crypto.randomUUID(), sessionUser.id, googleUser.email, tokens.access_token, tokens.refresh_token, expiresAt);
+            `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at, token_scope)
+             VALUES (?, ?, 'google', ?, ?, ?, ?, ?)`
+          ).run(crypto.randomUUID(), sessionUser.id, googleUser.email, tokens.access_token, tokens.refresh_token, expiresAt, grantedScope);
         }
 
         return redirect("/settings?connected=google");

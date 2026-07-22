@@ -29,6 +29,7 @@ export interface SyncResult {
 export async function refreshGoogleToken(refreshToken: string): Promise<{
   access_token: string;
   expires_in: number;
+  scope?: string;
 }> {
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -45,6 +46,8 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{
     client_secret: clientSecret,
     refresh_token: refreshToken,
     grant_type: "refresh_token",
+    // Explicitly request calendar scope to ensure refreshed token has it
+    scope: "https://www.googleapis.com/auth/calendar.readonly",
   });
 
   const res = await fetch(GOOGLE_TOKEN_URL, {
@@ -62,12 +65,14 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{
   const data = (await res.json()) as {
     access_token: string;
     expires_in: number;
+    scope?: string;
   };
 
-  console.log(`[google] Token refreshed successfully, expires in ${data.expires_in}s`);
+  console.log(`[google] Token refreshed successfully, expires in ${data.expires_in}s, scope: ${data.scope || "not returned"}`);
   return {
     access_token: data.access_token,
     expires_in: data.expires_in,
+    scope: data.scope,
   };
 }
 
@@ -114,9 +119,17 @@ export async function fetchGoogleCalendarEvents(
 
   if (!res.ok) {
     const text = await res.text();
-    console.error(`[google] Calendar API error: HTTP ${res.status} — ${text.slice(0, 500)}`);
+    let parsed: any = null;
+    try { parsed = JSON.parse(text); } catch {}
+    console.error(`[google] Calendar API error: HTTP ${res.status}`);
+    console.error(`[google] Full response body:`, text);
+    // Surface Google's error details if available
+    const reason = parsed?.error?.errors?.[0]?.reason || parsed?.error?.message || text;
+    const googleMsg = parsed?.error?.errors?.[0]?.message || "";
     throw new Error(
-      `Google Calendar API error: ${res.status} ${text}`,
+      `Google Calendar API error: ${res.status} — ${reason}${googleMsg ? ` (${googleMsg})` : ""}. ` +
+      `This usually means the token lacks the calendar scope or the calendar ID is wrong. ` +
+      `Try re-connecting your calendar from Settings.`,
     );
   }
 
@@ -146,12 +159,13 @@ export async function ensureFreshToken(
 ): Promise<string> {
   const conn = db
     .query(
-      "SELECT access_token, refresh_token, token_expires_at FROM calendar_connections WHERE id = ?",
+      "SELECT access_token, refresh_token, token_expires_at, token_scope FROM calendar_connections WHERE id = ?",
     )
     .get(connectionId) as {
     access_token: string;
     refresh_token: string | null;
     token_expires_at: string | null;
+    token_scope: string | null;
   } | null;
 
   if (!conn) {
@@ -164,6 +178,13 @@ export async function ensureFreshToken(
     const expiresAt = new Date(conn.token_expires_at).getTime();
     const now = Date.now();
     if (expiresAt > now + 60000) {
+      // Warn if stored scope doesn't include calendar access
+      if (conn.token_scope && !conn.token_scope.includes("calendar.readonly")) {
+        console.warn(
+          `[google] Token for connection ${connectionId} is valid but missing calendar scope! ` +
+          `Stored scope: "${conn.token_scope}". The user should re-connect their calendar from Settings.`
+        );
+      }
       console.log(`[google] Token still valid for connection ${connectionId} (expires ${conn.token_expires_at})`);
       return conn.access_token;
     }
@@ -188,8 +209,8 @@ export async function ensureFreshToken(
   ).toISOString();
 
   db.query(
-    "UPDATE calendar_connections SET access_token = ?, token_expires_at = ? WHERE id = ?",
-  ).run(tokens.access_token, expiresAt, connectionId);
+    "UPDATE calendar_connections SET access_token = ?, token_expires_at = ?, token_scope = COALESCE(?, token_scope) WHERE id = ?",
+  ).run(tokens.access_token, expiresAt, tokens.scope || null, connectionId);
 
   console.log(`[google] Token updated in DB for connection ${connectionId}, new expiry: ${expiresAt}`);
   return tokens.access_token;
