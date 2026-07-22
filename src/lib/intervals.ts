@@ -23,7 +23,7 @@ export function mergeIntervals(intervals: Interval[]): Interval[] {
     const last = merged[merged.length - 1];
     const current = sorted[i];
 
-    if (current.start <= last.end) {
+    if (current.start < last.end) {
       last.end = Math.max(last.end, current.end);
     } else {
       merged.push(current);
@@ -93,11 +93,31 @@ export function minutesToTime(minutes: number): string {
 }
 
 /**
- * Convert ISO datetime string to minutes since midnight (local time).
+ * Convert ISO datetime string to minutes since midnight.
+ *
+ * Parses the time portion directly from the string so the caller gets the
+ * wall-clock time as written, not as reinterpreted in the server's own
+ * timezone.  ISO strings from Google Calendar include an offset
+ * (e.g. "2026-07-22T09:00:00-04:00") and the "09:00" already represents
+ * the user's local time.  Strings without an offset (from the dev seeder)
+ * are treated as-is.
  */
 export function isoToMinutes(iso: string): number {
+  // Match the time portion: HH:MM, optionally :SS, optionally .frac, then
+  // an optional timezone designator (Z or ±HH:MM).
+  const match = iso.match(
+    /[T ](\d{2}):(\d{2})(?::(\d{2}))?(?:\.\d+)?(?:[+-]\d{2}:\d{2}|Z)?$/,
+  );
+  if (match) {
+    const hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    return hours * 60 + minutes;
+  }
+
+  // Fallback — shouldn't normally be reached for well-formed inputs.
   const d = new Date(iso);
-  return d.getHours() * 60 + d.getMinutes();
+  if (isNaN(d.getTime())) return 0;
+  return d.getUTCHours() * 60 + d.getUTCMinutes();
 }
 
 /**

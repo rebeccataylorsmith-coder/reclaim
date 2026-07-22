@@ -31,6 +31,7 @@ interface UserData {
     calendarEmail: string;
     syncEnabled: boolean;
     lastSyncedAt: string | null;
+    timezone: string | null;
   }>;
 }
 
@@ -111,8 +112,18 @@ function timeToMinutes(t: string): number {
 }
 
 function formatTime(isoStr: string): string {
-  const d = new Date(isoStr);
-  return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  // Parse time from the ISO string directly (like isoToMinutes) so the
+  // wall-clock time is shown as stored, not reinterpreted by the browser.
+  const match = isoStr.match(/[T ](\d{2}):(\d{2})/);
+  if (!match) {
+    const d = new Date(isoStr);
+    return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+  }
+  const h = parseInt(match[1], 10);
+  const m = parseInt(match[2], 10);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function isToday(dateStr: string): boolean {
@@ -120,8 +131,65 @@ function isToday(dateStr: string): boolean {
 }
 
 function nowMinutes(): number {
+  // Runs in the browser — new Date() returns the user's local time, which is
+  // what the timeline should be aligned to.
   const d = new Date();
   return d.getHours() * 60 + d.getMinutes();
+}
+
+/**
+ * Convert an IANA timezone name (e.g. "America/New_York") to a short display
+ * label (e.g. "Eastern Time").  Falls back to a best-effort abbreviation or the
+ * raw IANA name.
+ */
+function timezoneLabel(tz: string | null | undefined): string {
+  if (!tz) {
+    // Fall back to browser's timezone
+    try {
+      tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    } catch {
+      return "";
+    }
+  }
+  // Common North American mappings
+  const map: Record<string, string> = {
+    "America/New_York": "Eastern Time",
+    "America/Chicago": "Central Time",
+    "America/Denver": "Mountain Time",
+    "America/Los_Angeles": "Pacific Time",
+    "America/Anchorage": "Alaska Time",
+    "Pacific/Honolulu": "Hawaii Time",
+    "America/Phoenix": "Mountain Time (no DST)",
+    "America/Toronto": "Eastern Time",
+    "America/Vancouver": "Pacific Time",
+    "Europe/London": "UK Time",
+    "Europe/Paris": "Central European Time",
+    "Europe/Berlin": "Central European Time",
+    "Asia/Tokyo": "Japan Time",
+    "Asia/Shanghai": "China Time",
+    "Asia/Kolkata": "India Time",
+    "Asia/Singapore": "Singapore Time",
+    "Australia/Sydney": "Eastern Australia Time",
+    "UTC": "UTC",
+  };
+  if (map[tz]) return map[tz];
+
+  // Best-effort: extract city from IANA name
+  const parts = tz.split("/");
+  const city = parts[parts.length - 1].replace(/_/g, " ");
+  return city;
+}
+
+/**
+ * Format an HH:MM time string to a friendly AM/PM label.
+ */
+function formatHHMM(hhmm: string): string {
+  const [hStr, mStr] = hhmm.split(":");
+  const h = parseInt(hStr, 10);
+  const m = parseInt(mStr, 10);
+  const ampm = h >= 12 ? "PM" : "AM";
+  const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
+  return `${h12}:${String(m).padStart(2, "0")} ${ampm}`;
 }
 
 function minutesToPct(minutes: number, dayStart: number, dayEnd: number): number {
@@ -427,6 +495,7 @@ function DashboardPage() {
         onChangeDate={changeDate}
         onToday={goToToday}
         onToggleView={toggleView}
+        timezone={user?.connectedCalendars?.[0]?.timezone ?? null}
       />
 
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 pb-12">
@@ -524,6 +593,7 @@ function TopBar({
   onChangeDate,
   onToday,
   onToggleView,
+  timezone,
 }: {
   user: UserData | null;
   selectedDate: string;
@@ -532,7 +602,10 @@ function TopBar({
   onChangeDate: (delta: number) => void;
   onToday: () => void;
   onToggleView: (v: string) => void;
+  timezone: string | null;
 }) {
+  const tzLabel = timezoneLabel(timezone);
+
   return (
     <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-gray-200/60 shadow-sm">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
@@ -559,6 +632,9 @@ function TopBar({
                 className="px-3 py-1.5 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-lg transition"
               >
                 {formatDateLabel(selectedDate)}
+                {tzLabel && (
+                  <span className="ml-1.5 text-xs text-gray-400 font-normal">· {tzLabel}</span>
+                )}
               </button>
               <button
                 onClick={() => onChangeDate(1)}
@@ -802,7 +878,7 @@ function DayTimeline({
     const ampm = h >= 12 ? "PM" : "AM";
     const h12 = h > 12 ? h - 12 : h === 0 ? 12 : h;
     timeSlots.push({
-      label: mn === 0 ? `${h12} ${ampm}` : `${h12}:${String(mn).padStart(2, "0")}`,
+      label: mn === 0 ? `${h12} ${ampm}` : `${h12}:${String(mn).padStart(2, "0")} ${ampm}`,
       isHour: mn === 0,
       minutes: m,
     });
@@ -845,7 +921,7 @@ function DayTimeline({
 
           {/* ── Grid area ── */}
           <div
-            className="flex-1 relative bg-gradient-to-b from-emerald-50/30 via-white to-white"
+            className="flex-1 relative bg-gradient-to-b from-emerald-50/30 via-white to-white overflow-x-hidden"
             style={{ minWidth: 0 }}
           >
             {/* Hour grid lines (solid, faint) */}
@@ -886,34 +962,27 @@ function DayTimeline({
                 >
                   {/* Busy (meeting) — solid block with coloured left accent */}
                   {seg.type === "busy" && (
-                    <div className="h-full bg-blue-100/90 border-l-[3px] border-blue-500 rounded-r-lg flex items-center px-2.5 shadow-sm">
+                    <div className="h-full bg-blue-100/90 border-l-[3px] border-blue-500 rounded-r-lg flex items-center px-2.5 shadow-sm overflow-hidden">
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-blue-900 truncate leading-tight">
                           {seg.label}
                         </p>
                         <p className="text-[10px] text-blue-500/80 leading-tight">
-                          {seg.start} – {seg.end}
+                          {formatHHMM(seg.start)} – {formatHHMM(seg.end)}
                         </p>
                       </div>
                     </div>
                   )}
 
-                  {/* Buffer (prep/follow-up) — striped, lighter */}
+                  {/* Buffer (prep/follow-up) — muted, subtle */}
                   {seg.type === "buffer" && (
-                    <div className="h-full relative bg-amber-50/80 border border-dashed border-amber-300/50 rounded-lg flex items-center px-2.5 overflow-hidden">
-                      <div
-                        className="absolute inset-0 opacity-[0.07]"
-                        style={{
-                          backgroundImage:
-                            "repeating-linear-gradient(-45deg, transparent, transparent 3px, #b45309 3px, #b45309 5px)",
-                        }}
-                      />
+                    <div className="h-full relative bg-gray-50/70 border border-dashed border-gray-200 rounded-lg flex items-center px-2.5 overflow-hidden">
                       <div className="relative min-w-0">
-                        <p className="text-xs font-medium text-amber-800 truncate leading-tight">
+                        <p className="text-[11px] font-medium text-gray-400 truncate leading-tight">
                           {seg.label}
                         </p>
-                        <p className="text-[10px] text-amber-600/80 leading-tight">
-                          {seg.start} – {seg.end}
+                        <p className="text-[10px] text-gray-300/80 leading-tight">
+                          {formatHHMM(seg.start)} – {formatHHMM(seg.end)}
                         </p>
                       </div>
                     </div>
@@ -921,7 +990,7 @@ function DayTimeline({
 
                   {/* Break — emerald/sky gradient, stands out */}
                   {seg.type === "break" && (
-                    <div className="h-full bg-gradient-to-r from-emerald-100 via-emerald-50 to-sky-100 border-l-[3px] border-emerald-400 rounded-r-lg flex items-center px-2.5 shadow-sm">
+                    <div className="h-full bg-gradient-to-r from-emerald-100 via-emerald-50 to-sky-100 border-l-[3px] border-emerald-400 rounded-r-lg flex items-center px-2.5 shadow-sm overflow-hidden">
                       <div className="min-w-0">
                         <p className="text-xs font-semibold text-emerald-800 truncate leading-tight">
                           {seg.label === "Breathe"
@@ -932,7 +1001,7 @@ function DayTimeline({
                           {seg.label}
                         </p>
                         <p className="text-[10px] text-emerald-600/80 leading-tight">
-                          {seg.start} – {seg.end}
+                          {formatHHMM(seg.start)} – {formatHHMM(seg.end)}
                         </p>
                       </div>
                     </div>
@@ -961,7 +1030,7 @@ function DayTimeline({
       {/* Legend */}
       <div className="flex flex-wrap gap-3 mt-4 text-xs">
         <LegendItem color="bg-blue-100 border-l-[3px] border-blue-500" label="Busy" />
-        <LegendItem color="bg-amber-100 border border-dashed border-amber-300" label="Buffer" hasStripes />
+        <LegendItem color="bg-gray-100 border border-dashed border-gray-300" label="Buffer" />
         <LegendItem color="bg-gradient-to-r from-emerald-100 to-sky-100 border-l-[3px] border-emerald-400" label="Break" />
         <LegendItem color="bg-gradient-to-b from-emerald-50/30 to-white border border-gray-200" label="Gap (available)" />
       </div>

@@ -215,3 +215,33 @@ export async function ensureFreshToken(
   console.log(`[google] Token updated in DB for connection ${connectionId}, new expiry: ${expiresAt}`);
   return tokens.access_token;
 }
+
+/**
+ * Fetch calendar metadata from Google Calendar API.
+ * The /calendars/{calendarId} endpoint returns timeZone (e.g. "America/New_York").
+ */
+export async function fetchGoogleCalendarMetadata(
+  accessToken: string,
+  calendarId: string,
+): Promise<{ timeZone: string | null }> {
+  const url = `${GOOGLE_CALENDAR_API}/calendars/${encodeURIComponent(calendarId)}`;
+
+  console.log(`[google] Fetching calendar metadata for ${calendarId}`);
+
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    console.warn(`[google] Calendar metadata fetch failed: HTTP ${res.status} — ${text}`);
+    return { timeZone: null };
+  }
+
+  const data = (await res.json()) as { timeZone?: string };
+  console.log(`[google] Calendar metadata: timeZone=${data.timeZone || "not set"}`);
+  return { timeZone: data.timeZone ?? null };
+}

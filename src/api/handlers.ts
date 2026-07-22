@@ -156,10 +156,10 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
     const db = getDb();
     const connections = db.query(
-      "SELECT id, provider, calendar_email, sync_enabled, last_synced_at FROM calendar_connections WHERE user_id = ?"
+      "SELECT id, provider, calendar_email, sync_enabled, last_synced_at, timezone FROM calendar_connections WHERE user_id = ?"
     ).all(user.id) as Array<{
       id: string; provider: string; calendar_email: string;
-      sync_enabled: number; last_synced_at: string | null;
+      sync_enabled: number; last_synced_at: string | null; timezone: string | null;
     }>;
 
     const fullUser = db.query(
@@ -189,6 +189,7 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
           calendarEmail: c.calendar_email,
           syncEnabled: c.sync_enabled === 1,
           lastSyncedAt: c.last_synced_at,
+          timezone: c.timezone,
         })),
       },
     });
@@ -401,10 +402,10 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
     const db = getDb();
     const connections = db.query(
-      "SELECT id, provider, calendar_email, sync_enabled, last_synced_at FROM calendar_connections WHERE user_id = ?"
+      "SELECT id, provider, calendar_email, sync_enabled, last_synced_at, timezone FROM calendar_connections WHERE user_id = ?"
     ).all(user.id) as Array<{
       id: string; provider: string; calendar_email: string;
-      sync_enabled: number; last_synced_at: string | null;
+      sync_enabled: number; last_synced_at: string | null; timezone: string | null;
     }>;
 
     return json(connections.map((c) => ({
@@ -413,6 +414,7 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
       calendarEmail: c.calendar_email,
       syncEnabled: c.sync_enabled === 1,
       lastSyncedAt: c.last_synced_at,
+      timezone: c.timezone,
     })));
   }
 

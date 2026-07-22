@@ -2,6 +2,7 @@ import type { Database } from "bun:sqlite";
 import { getDb } from "../db/sqlite";
 import {
   fetchGoogleCalendarEvents,
+  fetchGoogleCalendarMetadata,
   ensureFreshToken,
   type GoogleCalendarEvent,
 } from "./google";
@@ -102,6 +103,25 @@ async function syncGoogleConnection(
   } while (pageToken);
 
   console.log(`[sync] Fetched ${allEvents.length} events across ${pageCount} page(s) for ${calendarEmail}`);
+
+  // Fetch calendar metadata (timezone) if we don't already have it
+  try {
+    const currentTz = db.query(
+      "SELECT timezone FROM calendar_connections WHERE id = ?",
+    ).get(connectionId) as { timezone: string | null } | null;
+
+    if (!currentTz?.timezone) {
+      const metadata = await fetchGoogleCalendarMetadata(token, "primary");
+      if (metadata.timeZone) {
+        db.query(
+          "UPDATE calendar_connections SET timezone = ? WHERE id = ?",
+        ).run(metadata.timeZone, connectionId);
+        console.log(`[sync] Stored timezone '${metadata.timeZone}' for connection ${connectionId}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[sync] Could not fetch calendar timezone: ${(err as Error).message}`);
+  }
 
   // Upsert events into DB
   const upsertStmt = db.prepare(`

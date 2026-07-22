@@ -161,6 +161,13 @@ export function initSchema(db: Database): void {
     // Column already exists — safe to ignore
   }
 
+  // Add timezone column if missing (added 2026-07-22)
+  try {
+    db.exec("ALTER TABLE calendar_connections ADD COLUMN timezone TEXT");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
   const exerciseCount = db.query("SELECT COUNT(*) as c FROM breathing_exercises").get() as { c: number } | null;
   if (exerciseCount && exerciseCount.c === 0) {
     seedBreathingExercises(db);
