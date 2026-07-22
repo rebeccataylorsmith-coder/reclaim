@@ -49,6 +49,11 @@ function requireUser(req: Request): { user: ReturnType<typeof getUserFromRequest
   return { user };
 }
 
+function getUserPlan(db: ReturnType<typeof getDb>, userId: string): string {
+  const row = db.query("SELECT plan FROM users WHERE id = ?").get(userId) as { plan: string } | null;
+  return row?.plan ?? "free";
+}
+
 // ─── Main handler ───
 
 export async function handleApiRequest(req: Request): Promise<Response | null> {
@@ -173,6 +178,7 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
         displayName: fullUser.display_name,
         oauthProvider: fullUser.oauth_provider,
         avatarUrl: fullUser.avatar_url,
+        plan: fullUser.plan || "free",
         preferences: {
           prepBufferMin: fullUser.prep_buffer_min,
           followUpBufferMin: fullUser.follow_up_buffer_min,
@@ -259,6 +265,17 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
              WHERE id = ?`
           ).run(tokens.access_token, tokens.refresh_token, expiresAt, grantedScope, (existingConn as any).id);
         } else {
+          // Free tier: 1 calendar connection max
+          const plan = getUserPlan(db, sessionUser.id);
+          if (plan === "free") {
+            const connCount = db.query(
+              "SELECT COUNT(*) as c FROM calendar_connections WHERE user_id = ?"
+            ).get(sessionUser.id) as { c: number };
+            if (connCount.c >= 1) {
+              return redirect("/settings?error=free_calendar_limit");
+            }
+          }
+
           db.query(
             `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at, token_scope)
              VALUES (?, ?, 'google', ?, ?, ?, ?, ?)`
@@ -851,6 +868,30 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
   }
 
   // ═══════════════════════════════════════════
+  // SUBSCRIPTION ENDPOINTS (require auth)
+  // ═══════════════════════════════════════════
+
+  // GET /api/subscription
+  if (url.pathname === "/api/subscription" && req.method === "GET") {
+    const { user, error } = requireUser(req);
+    if (error) return error;
+
+    const db = getDb();
+    const plan = getUserPlan(db, user.id);
+    return json({ plan });
+  }
+
+  // PUT /api/subscription/upgrade
+  if (url.pathname === "/api/subscription/upgrade" && req.method === "PUT") {
+    const { user, error } = requireUser(req);
+    if (error) return error;
+
+    const db = getDb();
+    db.query("UPDATE users SET plan = 'premium', updated_at = datetime('now') WHERE id = ?").run(user.id);
+    return json({ plan: "premium" });
+  }
+
+  // ═══════════════════════════════════════════
   // CONTENT ENDPOINTS (public)
   // ═══════════════════════════════════════════
 
@@ -858,7 +899,11 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
   if (url.pathname === "/api/content/breathing-exercises" && req.method === "GET") {
     const db = getDb();
     const exercises = getAllExercises(db);
-    return json(exercises);
+    // Filter based on user plan
+    const planUser = getUserFromRequest(req);
+    const plan = planUser ? getUserPlan(db, planUser.id) : "free";
+    const filtered = plan === "premium" ? exercises : exercises.filter((e: any) => e.difficulty === "beginner");
+    return json(filtered);
   }
 
   // GET /api/content/breathing-exercises/random
@@ -866,7 +911,25 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     const maxDuration = url.searchParams.get("maxDuration");
     const parsed = maxDuration ? parseInt(maxDuration, 10) : undefined;
     const db = getDb();
-    const exercise = getRandomExercise(db, parsed && !isNaN(parsed) ? parsed : undefined);
+    // For free users, only beginner exercises
+    const planUser = getUserFromRequest(req);
+    const plan = planUser ? getUserPlan(db, planUser.id) : "free";
+    let exercise: any;
+    if (plan === "premium") {
+      exercise = getRandomExercise(db, parsed && !isNaN(parsed) ? parsed : undefined);
+    } else {
+      // Free: only beginner exercises
+      const durationFilter = parsed && !isNaN(parsed) ? parsed : undefined;
+      let query = "SELECT * FROM breathing_exercises WHERE difficulty = 'beginner'";
+      const params: any[] = [];
+      if (durationFilter) {
+        query += " AND duration_seconds <= ?";
+        params.push(durationFilter);
+      }
+      query += " ORDER BY RANDOM() LIMIT 1";
+      const rows = db.query(query).all(...params) as any[];
+      exercise = rows.length > 0 ? rows[0] : null;
+    }
     if (!exercise) {
       return json({ error: "No exercises found" }, 404);
     }

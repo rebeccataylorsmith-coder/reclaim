@@ -15,6 +15,7 @@ interface UserData {
   displayName: string | null;
   oauthProvider: string | null;
   avatarUrl: string | null;
+  plan: string;
   preferences: {
     prepBufferMin: number;
     followUpBufferMin: number;
@@ -889,8 +890,27 @@ function TopBar({
 
           {/* Right: streak, view toggle, settings */}
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* View toggle */}
-            <div className="hidden sm:flex items-center bg-gray-100 rounded-lg p-0.5">
+          {/* Plan badge */}
+          <a
+            href={user?.plan === "premium" ? undefined : "/upgrade"}
+            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold transition ${
+              user?.plan === "premium"
+                ? "bg-gradient-to-r from-emerald-500 to-sky-500 text-white shadow-sm"
+                : "bg-gray-100 text-gray-500 hover:bg-gray-200"
+            }`}
+          >
+            {user?.plan === "premium" ? (
+              <>
+                <span className="text-[10px]">⭐</span>
+                Premium
+              </>
+            ) : (
+              "Free"
+            )}
+          </a>
+
+          {/* View toggle */}
+          <div className="hidden sm:flex items-center bg-gray-100 rounded-lg p-0.5">
               <button
                 onClick={() => onToggleView("day")}
                 className={`px-3 py-1 text-xs font-medium rounded-md transition ${
@@ -918,6 +938,18 @@ function TopBar({
               <span>🔥</span>
               <span>{streak.current}d</span>
             </div>
+
+            {/* Analytics (premium) */}
+            <a
+              href="/analytics"
+              className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 transition"
+              title="Analytics"
+            >
+              <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+                  d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </a>
 
             {/* Settings */}
             <a

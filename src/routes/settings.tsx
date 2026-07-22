@@ -57,6 +57,14 @@ function SettingsPage() {
         url.searchParams.delete("connected");
         changed = true;
       }
+      if (params.get("error") === "free_calendar_limit") {
+        setStatusMessage({
+          type: "error",
+          text: "Free accounts are limited to 1 calendar connection. Upgrade to Premium for unlimited calendars.",
+        });
+        url.searchParams.delete("error");
+        changed = true;
+      }
       if (params.get("error") === "missing_calendar_scope") {
         setStatusMessage({
           type: "error",
@@ -222,6 +230,43 @@ function SettingsPage() {
             {statusMessage.text}
           </div>
         )}
+
+        {/* Plan Status */}
+        <section className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200/60 p-6 mb-8">
+          <h2 className="text-lg font-semibold text-gray-900 mb-3">Plan</h2>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-semibold ${
+                user?.plan === "premium"
+                  ? "bg-gradient-to-r from-emerald-500 to-sky-500 text-white"
+                  : "bg-gray-100 text-gray-600"
+              }`}>
+                {user?.plan === "premium" ? (
+                  <>
+                    <span>⭐</span>
+                    Premium
+                  </>
+                ) : (
+                  "Free"
+                )}
+              </span>
+              <span className="text-sm text-gray-500">
+                {user?.plan === "premium"
+                  ? "Unlimited calendars, up to 6 breaks/day, all exercises, full analytics"
+                  : "1 calendar, 3 breaks/day, beginner exercises"}
+              </span>
+            </div>
+            {user?.plan !== "premium" && (
+              <a
+                href="/upgrade"
+                className="inline-flex items-center gap-1.5 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-emerald-200 transition hover:bg-emerald-700 active:scale-[0.98]"
+              >
+                Upgrade to Premium
+                <span>→</span>
+              </a>
+            )}
+          </div>
+        </section>
 
         {/* Calendar Connections */}
         <section className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200/60 p-6 mb-8">

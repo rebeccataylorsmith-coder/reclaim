@@ -35,6 +35,7 @@ export function initSchema(db: Database): void {
       oauth_provider  TEXT,
       oauth_subject   TEXT,
       avatar_url      TEXT,
+      plan            TEXT NOT NULL DEFAULT 'free',
       prep_buffer_min            INTEGER NOT NULL DEFAULT 5,
       follow_up_buffer_min       INTEGER NOT NULL DEFAULT 10,
       default_break_duration_min INTEGER NOT NULL DEFAULT 5,
@@ -154,6 +155,13 @@ export function initSchema(db: Database): void {
   `);
 
   // ── Migrations for existing databases ──
+  // Add plan column if missing (added 2026-07-22)
+  try {
+    db.exec("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'");
+  } catch {
+    // Column already exists — safe to ignore
+  }
+
   // Add token_scope column if missing (added 2026-07-22)
   try {
     db.exec("ALTER TABLE calendar_connections ADD COLUMN token_scope TEXT");

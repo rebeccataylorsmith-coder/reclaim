@@ -54,7 +54,7 @@ export function generateSuggestions(
     .query(
       `SELECT prep_buffer_min, follow_up_buffer_min, default_break_duration_min,
               deep_work_threshold_min, max_breaks_per_day, working_hours_start,
-              working_hours_end, preferred_break_types
+              working_hours_end, preferred_break_types, plan
        FROM users WHERE id = ?`,
     )
     .get(userId) as {
@@ -66,18 +66,24 @@ export function generateSuggestions(
     working_hours_start: string;
     working_hours_end: string;
     preferred_break_types: string;
+    plan: string;
   } | null;
 
   if (!userRow) {
     throw new Error("User not found");
   }
 
+  // Free tier: cap at 3 breaks per day
+  const effectiveMaxBreaks = userRow.plan === "free"
+    ? Math.min(userRow.max_breaks_per_day, 3)
+    : userRow.max_breaks_per_day;
+
   const prefs: UserPreferences = {
     prepBufferMin: userRow.prep_buffer_min,
     followUpBufferMin: userRow.follow_up_buffer_min,
     defaultBreakDurationMin: userRow.default_break_duration_min,
     deepWorkThresholdMin: userRow.deep_work_threshold_min,
-    maxBreaksPerDay: userRow.max_breaks_per_day,
+    maxBreaksPerDay: effectiveMaxBreaks,
     workingHoursStart: userRow.working_hours_start,
     workingHoursEnd: userRow.working_hours_end,
   };
@@ -544,7 +550,23 @@ export function startBreak(
   let quote = null;
 
   if (suggestion.break_type_id === "breathing") {
-    breathingExercise = getRandomExercise(db, suggestion.gap_minutes * 60);
+    // Free tier: only beginner exercises
+    const userPlan = db.query("SELECT plan FROM users WHERE id = ?").get(userId) as { plan: string } | null;
+    if (userPlan?.plan === "premium") {
+      breathingExercise = getRandomExercise(db, suggestion.gap_minutes * 60);
+    } else {
+      // Free: only beginner exercises
+      const maxDur = suggestion.gap_minutes * 60;
+      let query = "SELECT * FROM breathing_exercises WHERE difficulty = 'beginner'";
+      const params: any[] = [];
+      if (maxDur > 0) {
+        query += " AND duration_seconds <= ?";
+        params.push(maxDur);
+      }
+      query += " ORDER BY RANDOM() LIMIT 1";
+      const rows = db.query(query).all(...params) as any[];
+      breathingExercise = rows.length > 0 ? rows[0] : null;
+    }
   } else if (suggestion.break_type_id === "quote") {
     quote = getRandomQuote(db);
   }
