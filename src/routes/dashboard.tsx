@@ -556,6 +556,10 @@ function DashboardPage() {
                       selectedDate={selectedDate}
                       workingHoursStart={user?.preferences?.workingHoursStart || "08:00"}
                       workingHoursEnd={user?.preferences?.workingHoursEnd || "18:00"}
+                      suggestions={dailyData?.suggestions || []}
+                      suggestionStates={suggestionStates}
+                      onBreakAccept={handleAccept}
+                      onBreakStart={handleStart}
                     />
                   </div>
 
@@ -824,12 +828,20 @@ function DayTimeline({
   selectedDate,
   workingHoursStart,
   workingHoursEnd,
+  suggestions,
+  suggestionStates,
+  onBreakAccept,
+  onBreakStart,
 }: {
   timeline: TimelineSegment[];
   loading: boolean;
   selectedDate: string;
   workingHoursStart: string;
   workingHoursEnd: string;
+  suggestions?: Suggestion[];
+  suggestionStates?: Record<string, any>;
+  onBreakAccept?: (id: string) => void;
+  onBreakStart?: (id: string) => void;
 }) {
   const dayStart = timeToMinutes(workingHoursStart);
   const dayEnd = timeToMinutes(workingHoursEnd);
@@ -884,8 +896,10 @@ function DayTimeline({
     });
   }
 
-  // Filter to only non-gap segments for block rendering (gaps are the background)
-  const blocks = timeline.filter((seg) => seg.type !== "gap");
+  // Filter to only non-gap, non-break segments for block rendering (gaps are the background, breaks are markers)
+  const blocks = timeline.filter((seg) => seg.type !== "gap" && seg.type !== "break");
+  // Break segments rendered as subtle markers
+  const breakMarkers = timeline.filter((seg) => seg.type === "break");
 
   return (
     <div className="bg-white rounded-2xl shadow-sm ring-1 ring-gray-200/60 p-4 sm:p-6">
@@ -988,24 +1002,7 @@ function DayTimeline({
                     </div>
                   )}
 
-                  {/* Break — emerald/sky gradient, stands out */}
-                  {seg.type === "break" && (
-                    <div className="h-full bg-gradient-to-r from-emerald-100 via-emerald-50 to-sky-100 border-l-[3px] border-emerald-400 rounded-r-lg flex items-center px-2.5 shadow-sm overflow-hidden">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-emerald-800 truncate leading-tight">
-                          {seg.label === "Breathe"
-                            ? "🫁 "
-                            : seg.label === "Quote"
-                              ? "💬 "
-                              : "🧘 "}
-                          {seg.label}
-                        </p>
-                        <p className="text-[10px] text-emerald-600/80 leading-tight">
-                          {formatHHMM(seg.start)} – {formatHHMM(seg.end)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
+                  {/* Break markers are rendered as subtle dots below */}
                 </div>
               );
             })}
@@ -1023,6 +1020,49 @@ function DayTimeline({
                 </span>
               </div>
             )}
+
+            {/* ── Break suggestion markers (subtle dots on the timeline edge) ── */}
+            {breakMarkers.map((seg, idx) => {
+              const segStart = timeToMinutes(seg.start);
+              const top = posY(segStart);
+              // Match to suggestion by time
+              const suggestion = (suggestions || []).find((s) => {
+                const sTime = s.suggestedStart.slice(11, 16); // extract "HH:MM" from ISO
+                return sTime === seg.start;
+              });
+              const state = suggestion ? suggestionStates?.[suggestion.id] : null;
+              const isCompleted = state?.status === "completed" || state?.completed;
+              const isSkipped = state?.status === "skipped";
+
+              // Don't show completed/skipped markers
+              if (isCompleted || isSkipped) return null;
+
+              const emoji =
+                seg.label === "Breathe" ? "🫁" : seg.label === "Quote" ? "💬" : "🧘";
+
+              return (
+                <div
+                  key={`break-marker-${idx}`}
+                  className="absolute left-0 z-25"
+                  style={{ top: top - 4 }}
+                >
+                  <button
+                    className="group flex items-center"
+                    onClick={() => {
+                      if (!suggestion) return;
+                      if (!state || state.status === "pending") {
+                        onBreakAccept?.(suggestion.id);
+                      } else if (state.status === "accepted") {
+                        onBreakStart?.(suggestion.id);
+                      }
+                    }}
+                    title={`${emoji} ${seg.label} — ${formatHHMM(seg.start)} (${formatHHMM(seg.end)})`}
+                  >
+                    <div className="h-[7px] w-[7px] rounded-full bg-emerald-500 ring-2 ring-white shadow-sm hover:ring-emerald-300 hover:scale-150 transition-all cursor-pointer" />
+                  </button>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>
@@ -1031,7 +1071,7 @@ function DayTimeline({
       <div className="flex flex-wrap gap-3 mt-4 text-xs">
         <LegendItem color="bg-blue-100 border-l-[3px] border-blue-500" label="Busy" />
         <LegendItem color="bg-gray-100 border border-dashed border-gray-300" label="Buffer" />
-        <LegendItem color="bg-gradient-to-r from-emerald-100 to-sky-100 border-l-[3px] border-emerald-400" label="Break" />
+        <LegendItem color="bg-emerald-500 h-[7px] w-[7px] rounded-full ring-2 ring-white shadow-sm" label="Break" />
         <LegendItem color="bg-gradient-to-b from-emerald-50/30 to-white border border-gray-200" label="Gap (available)" />
       </div>
     </div>
