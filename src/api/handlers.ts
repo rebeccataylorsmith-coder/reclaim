@@ -16,9 +16,12 @@ import {
 } from "../auth/session";
 import {
   getGoogleAuthURL,
+  getMicrosoftAuthURL,
   decodeState,
   exchangeGoogleCode,
   getGoogleUserInfo,
+  exchangeMicrosoftCode,
+  getMicrosoftUserInfo,
 } from "../auth/oauth";
 import { syncUserCalendars } from "../calendar/sync";
 import {
@@ -204,14 +207,24 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
   // GET /api/auth/oauth/google — login-only OAuth (no calendar scope)
   if (url.pathname === "/api/auth/oauth/google" && req.method === "GET") {
     try {
-      const authURL = getGoogleAuthURL({ purpose: "login" });
+      const authURL = getGoogleAuthURL({ purpose: "login", provider: "google" });
       return redirect(authURL);
     } catch (err) {
       return json({ error: "OAuth configuration error" }, 500);
     }
   }
 
-  // GET /api/auth/oauth/callback — handle Google OAuth callback for BOTH login and calendar connection
+  // GET /api/auth/oauth/microsoft — login-only Microsoft OAuth
+  if (url.pathname === "/api/auth/oauth/microsoft" && req.method === "GET") {
+    try {
+      const authURL = getMicrosoftAuthURL({ purpose: "login", provider: "microsoft" });
+      return redirect(authURL);
+    } catch (err) {
+      return json({ error: "OAuth configuration error" }, 500);
+    }
+  }
+
+  // GET /api/auth/oauth/callback — handle OAuth callback for BOTH providers and BOTH purposes
   if (url.pathname === "/api/auth/oauth/callback" && req.method === "GET") {
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state") || "";
@@ -225,11 +238,42 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
       return redirect("/auth/login?error=missing_code");
     }
 
-    const purpose = state ? decodeState(state) : "login";
+    const decoded = state ? decodeState(state) : { purpose: "login" as const, provider: "google" as const };
+    const { purpose, provider } = decoded;
 
     try {
-      const tokens = await exchangeGoogleCode(code);
-      const googleUser = await getGoogleUserInfo(tokens.access_token);
+      let userEmail: string;
+      let userName: string;
+      let userAvatar: string | null = null;
+      let oauthSubject: string;
+      let accessToken: string;
+      let refreshToken: string | null;
+      let expiresIn: number;
+      let grantedScope: string;
+
+      if (provider === "microsoft") {
+        const tokens = await exchangeMicrosoftCode(code);
+        const msUser = await getMicrosoftUserInfo(tokens.access_token);
+        userEmail = msUser.mail || msUser.userPrincipalName;
+        userName = msUser.displayName;
+        oauthSubject = msUser.id;
+        accessToken = tokens.access_token;
+        refreshToken = tokens.refresh_token;
+        expiresIn = tokens.expires_in;
+        grantedScope = tokens.scope || "";
+      } else {
+        const tokens = await exchangeGoogleCode(code);
+        const googleUser = await getGoogleUserInfo(tokens.access_token);
+        userEmail = googleUser.email;
+        userName = googleUser.name;
+        oauthSubject = googleUser.id;
+        userAvatar = googleUser.picture;
+        accessToken = tokens.access_token;
+        refreshToken = tokens.refresh_token;
+        expiresIn = tokens.expires_in;
+        grantedScope = tokens.scope || "";
+      }
+
       const db = getDb();
 
       // ── CALENDAR CONNECTION FLOW ──
@@ -241,21 +285,23 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
         }
 
         // Verify the token actually has calendar scope
-        const grantedScope = tokens.scope || "";
-        const hasCalendarScope = grantedScope.includes("calendar.readonly");
+        const scopeCheck = provider === "microsoft"
+          ? "Calendars.Read"
+          : "calendar.readonly";
+        const hasCalendarScope = grantedScope.includes(scopeCheck);
         if (!hasCalendarScope) {
-          console.error(`[oauth] Calendar connection missing calendar scope. Granted: "${grantedScope}"`);
+          console.error(`[oauth] Calendar connection missing ${provider} calendar scope. Granted: "${grantedScope}"`);
           return redirect("/settings?error=missing_calendar_scope");
         }
 
-        const expiresAt = tokens.expires_in
-          ? new Date(Date.now() + tokens.expires_in * 1000).toISOString()
+        const expiresAt = expiresIn
+          ? new Date(Date.now() + expiresIn * 1000).toISOString()
           : null;
 
         // Check if connection already exists for this user + provider + email
         const existingConn = db.query(
-          "SELECT id FROM calendar_connections WHERE user_id = ? AND provider = 'google' AND calendar_email = ?"
-        ).get(sessionUser.id, googleUser.email);
+          "SELECT id FROM calendar_connections WHERE user_id = ? AND provider = ? AND calendar_email = ?"
+        ).get(sessionUser.id, provider, userEmail);
 
         if (existingConn) {
           db.query(
@@ -263,7 +309,7 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
              SET access_token = ?, refresh_token = COALESCE(?, refresh_token),
                  token_expires_at = ?, token_scope = ?, last_synced_at = NULL
              WHERE id = ?`
-          ).run(tokens.access_token, tokens.refresh_token, expiresAt, grantedScope, (existingConn as any).id);
+          ).run(accessToken, refreshToken, expiresAt, grantedScope, (existingConn as any).id);
         } else {
           // Free tier: 1 calendar connection max
           const plan = getUserPlan(db, sessionUser.id);
@@ -278,43 +324,45 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
 
           db.query(
             `INSERT INTO calendar_connections (id, user_id, provider, calendar_email, access_token, refresh_token, token_expires_at, token_scope)
-             VALUES (?, ?, 'google', ?, ?, ?, ?, ?)`
-          ).run(crypto.randomUUID(), sessionUser.id, googleUser.email, tokens.access_token, tokens.refresh_token, expiresAt, grantedScope);
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+          ).run(crypto.randomUUID(), sessionUser.id, provider, userEmail, accessToken, refreshToken, expiresAt, grantedScope);
         }
 
-        return redirect("/settings?connected=google");
+        return redirect(`/settings?connected=${provider}`);
       }
 
       // ── LOGIN FLOW ──
       if (purpose === "login") {
         // Find or create user — NO auto calendar connection
         let user = db.query(
-          "SELECT id, email, display_name, oauth_provider, oauth_subject, avatar_url FROM users WHERE oauth_subject = ? AND oauth_provider = 'google'"
-        ).get(googleUser.id) as any;
+          "SELECT id, email, display_name, oauth_provider, oauth_subject, avatar_url FROM users WHERE oauth_subject = ? AND oauth_provider = ?"
+        ).get(oauthSubject, provider) as any;
 
         if (!user) {
           const emailUser = db.query(
             "SELECT id FROM users WHERE email = ?"
-          ).get(googleUser.email);
+          ).get(userEmail);
 
           if (emailUser) {
             db.query(
-              "UPDATE users SET oauth_provider = 'google', oauth_subject = ?, avatar_url = COALESCE(avatar_url, ?), updated_at = datetime('now') WHERE id = ?"
-            ).run(googleUser.id, googleUser.picture, (emailUser as any).id);
-            user = { id: (emailUser as any).id, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
+              "UPDATE users SET oauth_provider = ?, oauth_subject = ?, avatar_url = COALESCE(avatar_url, ?), updated_at = datetime('now') WHERE id = ?"
+            ).run(provider, oauthSubject, userAvatar, (emailUser as any).id);
+            user = { id: (emailUser as any).id, email: userEmail, display_name: userName, oauth_provider: provider, oauth_subject: oauthSubject, avatar_url: userAvatar };
           } else {
             const userId = crypto.randomUUID();
             db.query(
               `INSERT INTO users (id, email, display_name, oauth_provider, oauth_subject, avatar_url)
-               VALUES (?, ?, ?, 'google', ?, ?)`
-            ).run(userId, googleUser.email, googleUser.name, googleUser.id, googleUser.picture);
-            user = { id: userId, email: googleUser.email, display_name: googleUser.name, oauth_provider: 'google', oauth_subject: googleUser.id, avatar_url: googleUser.picture };
+               VALUES (?, ?, ?, ?, ?, ?)`
+            ).run(userId, userEmail, userName, provider, oauthSubject, userAvatar);
+            user = { id: userId, email: userEmail, display_name: userName, oauth_provider: provider, oauth_subject: oauthSubject, avatar_url: userAvatar };
           }
         } else {
           // Update avatar on each login
-          db.query(
-            "UPDATE users SET avatar_url = ?, updated_at = datetime('now') WHERE id = ?"
-          ).run(googleUser.picture, user.id);
+          if (userAvatar) {
+            db.query(
+              "UPDATE users SET avatar_url = ?, updated_at = datetime('now') WHERE id = ?"
+            ).run(userAvatar, user.id);
+          }
         }
 
         // Create session (login)
@@ -405,7 +453,20 @@ export async function handleApiRequest(req: Request): Promise<Response | null> {
     if (error) return error;
 
     try {
-      const authURL = getGoogleAuthURL({ purpose: "connect_calendar" });
+      const authURL = getGoogleAuthURL({ purpose: "connect_calendar", provider: "google" });
+      return redirect(authURL);
+    } catch (err) {
+      return json({ error: "OAuth configuration error" }, 500);
+    }
+  }
+
+  // GET /api/calendar/oauth/microsoft — start Microsoft calendar-only OAuth flow (requires auth)
+  if (url.pathname === "/api/calendar/oauth/microsoft" && req.method === "GET") {
+    const { user, error } = requireUser(req);
+    if (error) return error;
+
+    try {
+      const authURL = getMicrosoftAuthURL({ purpose: "connect_calendar", provider: "microsoft" });
       return redirect(authURL);
     } catch (err) {
       return json({ error: "OAuth configuration error" }, 500);

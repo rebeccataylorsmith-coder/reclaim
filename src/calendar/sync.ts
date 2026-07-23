@@ -3,9 +3,15 @@ import { getDb } from "../db/sqlite";
 import {
   fetchGoogleCalendarEvents,
   fetchGoogleCalendarMetadata,
-  ensureFreshToken,
+  ensureFreshToken as ensureFreshGoogleToken,
   type GoogleCalendarEvent,
 } from "./google";
+import {
+  fetchMicrosoftCalendarEvents,
+  fetchMicrosoftCalendarMetadata,
+  ensureFreshToken as ensureFreshMicrosoftToken,
+  type MicrosoftCalendarEvent,
+} from "./microsoft";
 
 /**
  * Sync all calendar connections for a user.
@@ -41,8 +47,12 @@ export async function syncUserCalendars(
         const count = await syncGoogleConnection(db, conn.id, userId, conn.calendar_email, conn.sync_cursor);
         console.log(`[sync] Connection ${conn.id} synced ${count} events`);
         totalSynced += count;
+      } else if (conn.provider === "microsoft") {
+        const count = await syncMicrosoftConnection(db, conn.id, userId, conn.calendar_email, conn.sync_cursor);
+        console.log(`[sync] Connection ${conn.id} synced ${count} events`);
+        totalSynced += count;
       }
-      // Microsoft sync not yet implemented — skip
+      // Unknown provider — skip
     } catch (err: any) {
       console.error(`[sync] Error syncing connection ${conn.id}: ${err.message}`);
       errors.push(`Sync error for ${conn.provider}/${conn.calendar_email}: ${err.message}`);
@@ -65,7 +75,7 @@ async function syncGoogleConnection(
 ): Promise<number> {
   let token: string;
   try {
-    token = await ensureFreshToken(db, connectionId);
+    token = await ensureFreshGoogleToken(db, connectionId);
   } catch (err) {
     console.error(`[sync] Token refresh failed for connection ${connectionId}: ${(err as Error).message}`);
     throw new Error(`Token refresh failed: ${(err as Error).message}`);
@@ -214,7 +224,143 @@ export async function syncConnection(
   let count = 0;
   if (conn.provider === "google") {
     count = await syncGoogleConnection(db, conn.id, userId, conn.calendar_email, conn.sync_cursor);
+  } else if (conn.provider === "microsoft") {
+    count = await syncMicrosoftConnection(db, conn.id, userId, conn.calendar_email, conn.sync_cursor);
   }
 
   return { syncedCount: count };
+}
+
+/**
+ * Sync a single Microsoft Calendar connection.
+ */
+async function syncMicrosoftConnection(
+  db: Database,
+  connectionId: string,
+  userId: string,
+  calendarEmail: string,
+  syncCursor: string | null,
+): Promise<number> {
+  let token: string;
+  try {
+    token = await ensureFreshMicrosoftToken(db, connectionId);
+  } catch (err) {
+    console.error(`[sync] Microsoft token refresh failed for connection ${connectionId}: ${(err as Error).message}`);
+    throw new Error(`Token refresh failed: ${(err as Error).message}`);
+  }
+
+  // Time range: ±7 days from today
+  const now = new Date();
+  const timeMin = new Date(now.getTime() - 7 * 86400000).toISOString();
+  const timeMax = new Date(now.getTime() + 7 * 86400000).toISOString();
+
+  console.log(`[sync] Fetching Microsoft events for ${calendarEmail} from ${timeMin.slice(0, 10)} to ${timeMax.slice(0, 10)}${syncCursor ? " (delta sync)" : ""}`);
+
+  let allEvents: MicrosoftCalendarEvent[] = [];
+  let nextDeltaLink: string | undefined;
+  let pageLink: string | undefined;
+  let currentDeltaLink = syncCursor ?? undefined;
+  let pageCount = 0;
+
+  // Fetch events (paginated)
+  do {
+    pageCount++;
+    const result = await fetchMicrosoftCalendarEvents(token, {
+      deltaLink: currentDeltaLink,
+      pageLink,
+      startDateTime: currentDeltaLink ? undefined : timeMin,
+      endDateTime: currentDeltaLink ? undefined : timeMax,
+    });
+
+    allEvents.push(...result.events);
+    nextDeltaLink = result.nextDeltaLink;
+    pageLink = result.nextPageLink;
+
+    // After first page with delta, don't keep passing it
+    currentDeltaLink = undefined;
+  } while (pageLink);
+
+  console.log(`[sync] Fetched ${allEvents.length} Microsoft events across ${pageCount} page(s) for ${calendarEmail}`);
+
+  // Fetch calendar metadata (timezone) if we don't already have it
+  try {
+    const currentTz = db.query(
+      "SELECT timezone FROM calendar_connections WHERE id = ?",
+    ).get(connectionId) as { timezone: string | null } | null;
+
+    if (!currentTz?.timezone) {
+      const metadata = await fetchMicrosoftCalendarMetadata(token);
+      if (metadata.timeZone) {
+        db.query(
+          "UPDATE calendar_connections SET timezone = ? WHERE id = ?",
+        ).run(metadata.timeZone, connectionId);
+        console.log(`[sync] Stored timezone '${metadata.timeZone}' for Microsoft connection ${connectionId}`);
+      }
+    }
+  } catch (err) {
+    console.warn(`[sync] Could not fetch Microsoft calendar timezone: ${(err as Error).message}`);
+  }
+
+  // Upsert events into DB
+  const upsertStmt = db.prepare(`
+    INSERT INTO calendar_events (id, user_id, connection_id, external_id, title,
+      start_time, end_time, is_all_day, status, recurrence_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(user_id, external_id) DO UPDATE SET
+      title = excluded.title,
+      start_time = excluded.start_time,
+      end_time = excluded.end_time,
+      is_all_day = excluded.is_all_day,
+      status = excluded.status,
+      recurrence_id = excluded.recurrence_id,
+      updated_at = datetime('now')
+  `);
+
+  let count = 0;
+  const upsertMany = db.transaction(() => {
+    for (const event of allEvents) {
+      const externalId = event.id;
+      const title = event.subject || "(no title)";
+      const startRaw = event.start?.dateTime;
+      const endRaw = event.end?.dateTime;
+      const isAllDay = event.isAllDay ? 1 : 0;
+      // Microsoft Graph uses "showAs": "free"/"busy"/"tentative"/"oof"/"workingElsewhere"/"unknown"
+      // Map to our status
+      const showAs = event.showAs || "busy";
+      const status = showAs === "free" ? "tentative" : "confirmed";
+      const recurrenceId = event.seriesMasterId || null;
+
+      if (!startRaw || !endRaw) {
+        console.warn(`[sync] Skipping Microsoft event ${externalId}: missing start/end time`);
+        continue;
+      }
+
+      const id = crypto.randomUUID();
+      upsertStmt.run(
+        id,
+        userId,
+        connectionId,
+        externalId,
+        title,
+        startRaw,
+        endRaw,
+        isAllDay,
+        status,
+        recurrenceId,
+      );
+      count++;
+    }
+  });
+  upsertMany();
+
+  console.log(`[sync] Upserted ${count} Microsoft events into DB for connection ${connectionId}`);
+
+  // Update sync cursor and last_synced_at
+  // Microsoft Graph delta sync uses @odata.deltaLink as the sync cursor
+  db.query(
+    "UPDATE calendar_connections SET sync_cursor = ?, last_synced_at = datetime('now') WHERE id = ?",
+  ).run(nextDeltaLink || null, connectionId);
+
+  console.log(`[sync] Updated sync_cursor for Microsoft connection ${connectionId}${nextDeltaLink ? "" : " (no new delta link)"}`);
+  return count;
 }

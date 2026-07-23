@@ -57,6 +57,11 @@ function SettingsPage() {
         url.searchParams.delete("connected");
         changed = true;
       }
+      if (params.get("connected") === "microsoft") {
+        setStatusMessage({ type: "success", text: "Outlook Calendar connected successfully!" });
+        url.searchParams.delete("connected");
+        changed = true;
+      }
       if (params.get("error") === "free_calendar_limit") {
         setStatusMessage({
           type: "error",
@@ -187,6 +192,11 @@ function SettingsPage() {
     window.location.href = "/api/calendar/oauth/google";
   }
 
+  function handleConnectMicrosoft() {
+    setShowAddMenu(false);
+    window.location.href = "/api/calendar/oauth/microsoft";
+  }
+
   if (loading) {
     return (
       <div className="min-h-dvh bg-stone-50 flex items-center justify-center">
@@ -303,15 +313,13 @@ function SettingsPage() {
                       Google Calendar
                     </button>
                     <button
-                      disabled
-                      className="flex w-full items-center gap-3 px-4 py-3 text-sm text-gray-400 bg-gray-50 cursor-not-allowed"
-                      title="Microsoft Outlook coming soon"
+                      onClick={handleConnectMicrosoft}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-sm text-gray-700 hover:bg-gray-50 transition"
                     >
-                      <svg className="h-5 w-5 shrink-0 opacity-40" viewBox="0 0 24 24" fill="currentColor">
+                      <svg className="h-5 w-5 shrink-0" viewBox="0 0 24 24" fill="currentColor">
                         <path d="M21.43 4.69L12 9.38v5.24l9.43 4.69V4.69zM10.71 9.47L2.57 5.89v12.22l8.14-3.57V9.47z"/>
                       </svg>
                       Outlook Calendar
-                      <span className="ml-auto text-[10px] text-gray-300">Soon</span>
                     </button>
                   </div>
                 </>
