@@ -253,7 +253,7 @@ function SettingsPage() {
               <span className="text-sm text-gray-500">
                 {user?.plan === "premium"
                   ? "Unlimited calendars, up to 6 breaks/day, all exercises, full analytics"
-                  : "1 calendar, 3 breaks/day, beginner exercises"}
+                  : "1 calendar, 1 break/day, beginner exercises"}
               </span>
             </div>
             {user?.plan !== "premium" && (

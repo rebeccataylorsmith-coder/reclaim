@@ -73,9 +73,9 @@ export function generateSuggestions(
     throw new Error("User not found");
   }
 
-  // Free tier: cap at 3 breaks per day
+  // Free tier: cap at 1 break per day
   const effectiveMaxBreaks = userRow.plan === "free"
-    ? Math.min(userRow.max_breaks_per_day, 3)
+    ? Math.min(userRow.max_breaks_per_day, 1)
     : userRow.max_breaks_per_day;
 
   const prefs: UserPreferences = {

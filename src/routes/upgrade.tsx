@@ -107,7 +107,7 @@ function UpgradePage() {
               </li>
               <li className="flex items-start gap-2 text-sm text-gray-700">
                 <span className="text-emerald-500 mt-0.5 shrink-0">✓</span>
-                Up to 3 breaks per day
+                Up to 1 break per day
               </li>
               <li className="flex items-start gap-2 text-sm text-gray-700">
                 <span className="text-emerald-500 mt-0.5 shrink-0">✓</span>
