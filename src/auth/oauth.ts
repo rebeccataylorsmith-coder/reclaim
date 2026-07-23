@@ -6,8 +6,8 @@ const MICROSOFT_AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0
 const MICROSOFT_TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token";
 const MICROSOFT_USERINFO_URL = "https://graph.microsoft.com/v1.0/me";
 
-const REDIRECT_URI =
-  "https://e0746cfaa6a73d124ecfa16b31664acd.ctonew.app/api/auth/oauth/callback";
+const BASE_URL = process.env.BASE_URL || "https://getreclaim.co";
+const REDIRECT_URI = `${BASE_URL}/api/auth/oauth/callback`;
 
 const GOOGLE_LOGIN_SCOPES = ["email", "profile"].join(" ");
 const GOOGLE_CALENDAR_SCOPES = [
