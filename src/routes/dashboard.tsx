@@ -1148,8 +1148,9 @@ function DayTimeline({
     });
   }
 
-  // Filter to only non-gap, non-break segments for block rendering (gaps are the background, breaks are markers)
-  const blocks = timeline.filter((seg) => seg.type !== "gap" && seg.type !== "break");
+  // Filter to only non-gap, non-break, non-buffer segments for block rendering
+  // (gaps are the background, breaks are markers, buffers are hidden from view)
+  const blocks = timeline.filter((seg) => seg.type !== "gap" && seg.type !== "break" && seg.type !== "buffer");
   // Break segments rendered as subtle markers
   const breakMarkers = timeline.filter((seg) => seg.type === "break");
 
@@ -1240,21 +1241,7 @@ function DayTimeline({
                     </div>
                   )}
 
-                  {/* Buffer (prep/follow-up) — muted, subtle */}
-                  {seg.type === "buffer" && (
-                    <div className="h-full relative bg-gray-50/70 border border-dashed border-gray-200 rounded-lg flex items-center px-2.5 overflow-hidden">
-                      <div className="relative min-w-0">
-                        <p className="text-[11px] font-medium text-gray-400 truncate leading-tight">
-                          {seg.label}
-                        </p>
-                        <p className="text-[10px] text-gray-300/80 leading-tight">
-                          {formatHHMM(seg.start)} – {formatHHMM(seg.end)}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Break markers are rendered as subtle dots below */}
+                  {/* Break markers are rendered as thin horizontal bars below */}
                 </div>
               );
             })}
@@ -1273,7 +1260,7 @@ function DayTimeline({
               </div>
             )}
 
-            {/* ── Break suggestion markers (subtle dots on the timeline edge) ── */}
+            {/* ── Break suggestion markers (thin horizontal bars across the timeline) ── */}
             {breakMarkers.map((seg, idx) => {
               const segStart = timeToMinutes(seg.start);
               const top = posY(segStart);
@@ -1290,16 +1277,16 @@ function DayTimeline({
               if (isCompleted || isSkipped) return null;
 
               const emoji =
-                seg.label === "Breathe" ? "🫁" : seg.label === "Quote" ? "💬" : "🧘";
+                seg.label === "Breathe" ? "🌊" : seg.label === "Quote" ? "💬" : "🧘";
 
               return (
                 <div
                   key={`break-marker-${idx}`}
-                  className="absolute left-0 z-25"
-                  style={{ top: top - 4 }}
+                  className="absolute left-0 right-0 z-25"
+                  style={{ top: top - 1.5 }}
                 >
                   <button
-                    className="group flex items-center"
+                    className="group flex items-center w-full"
                     onClick={() => {
                       if (!suggestion) return;
                       if (!state || state.status === "pending") {
@@ -1310,7 +1297,7 @@ function DayTimeline({
                     }}
                     title={`${emoji} ${seg.label} — ${formatHHMM(seg.start)} (${formatHHMM(seg.end)})`}
                   >
-                    <div className="h-[7px] w-[7px] rounded-full bg-emerald-500 ring-2 ring-white shadow-sm hover:ring-emerald-300 hover:scale-150 transition-all cursor-pointer" />
+                    <div className="h-[2.5px] w-full bg-emerald-400/60 hover:bg-emerald-500/80 transition-colors cursor-pointer rounded-full" />
                   </button>
                 </div>
               );
@@ -1322,8 +1309,7 @@ function DayTimeline({
       {/* Legend */}
       <div className="flex flex-wrap gap-3 mt-4 text-xs">
         <LegendItem color="bg-blue-100 border-l-[3px] border-blue-500" label="Busy" />
-        <LegendItem color="bg-gray-100 border border-dashed border-gray-300" label="Buffer" />
-        <LegendItem color="bg-emerald-500 h-[7px] w-[7px] rounded-full ring-2 ring-white shadow-sm" label="Break" />
+        <LegendItem color="bg-emerald-400/60 h-[2.5px] w-6 rounded-full" label="Break" />
         <LegendItem color="bg-gradient-to-b from-emerald-50/30 to-white border border-gray-200" label="Gap (available)" />
       </div>
     </div>
@@ -1489,7 +1475,7 @@ function SuggestionCard({
                 {formatTime(suggestion.suggestedStart)}
               </span>
               <span className="text-xs text-gray-400">— {suggestion.durationMinutes} min</span>
-              <span className="text-lg">{isBreathing ? "🫁" : "💬"}</span>
+              <span className="text-lg">{isBreathing ? "🌊" : "💬"}</span>
             </div>
 
             {/* Context */}

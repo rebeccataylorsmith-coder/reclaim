@@ -147,7 +147,7 @@ function Home() {
                 color: "emerald",
               },
               {
-                emoji: "🫁",
+                emoji: "🌊",
                 title: "Guided breathing",
                 desc: "4-7-8, Box Breathing, and more. Simple on-screen guidance so you can follow along without leaving the app.",
                 color: "sky",

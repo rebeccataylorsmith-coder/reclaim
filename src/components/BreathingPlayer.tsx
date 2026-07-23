@@ -59,22 +59,50 @@ function buildPhaseSteps(exercise: BreathingExercise): PhaseStep[] {
 
 // ─── Audio helpers ───────────────────────────────────────────────────────────
 
-function speakText(text: string): void {
+function speakText(text: string, rate?: number): void {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.rate = 0.85;
+  utterance.rate = rate ?? 0.9;
   utterance.pitch = 1.0;
   utterance.volume = 0.9;
   const voices = window.speechSynthesis.getVoices();
-  const preferred = voices.find(
+
+  // Priority tiers for voice quality
+  const premiumKeywords = ["Premium", "Enhanced", "Neural", "Wavenet"];
+  const brandKeywords = ["Google", "Microsoft", "Apple", "Samantha", "Daniel", "Karen", "Alex"];
+
+  // Tier 1: premium/neural voices
+  let selected = voices.find(
     (v) =>
-      v.name.includes("Samantha") ||
-      v.name.includes("Karen") ||
-      v.name.includes("Female") ||
-      v.name.includes("Google UK English Female"),
+      premiumKeywords.some((kw) => v.name.includes(kw)) ||
+      premiumKeywords.some((kw) => (v.voiceURI || "").includes(kw)),
   );
-  if (preferred) utterance.voice = preferred;
+
+  // Tier 2: well-known brand voices
+  if (!selected) {
+    selected = voices.find((v) =>
+      brandKeywords.some((kw) => v.name.includes(kw)),
+    );
+  }
+
+  // Tier 3: current fallback strategy
+  if (!selected) {
+    selected = voices.find(
+      (v) =>
+        v.name.includes("Samantha") ||
+        v.name.includes("Karen") ||
+        v.name.includes("Female") ||
+        v.name.includes("Google UK English Female"),
+    );
+  }
+
+  if (selected) {
+    utterance.voice = selected;
+  } else {
+    console.log("[Reclaim speakText] No high-quality voice found; using browser default. Available voices:", voices.map(v => v.name));
+  }
+
   window.speechSynthesis.speak(utterance);
 }
 
@@ -268,9 +296,13 @@ export default function BreathingPlayer({
       if (spokenSecondRef.current !== secondsRemaining) {
         spokenSecondRef.current = secondsRemaining;
         // Slight delay so the phase name can finish if just started
+        // plus a small 80ms pause between numbers for a calm, unhurried pace
         const delay = spokenPhaseRef.current === phaseKey ? 600 : 150;
         const timer = setTimeout(
-          () => speakText(String(secondsRemaining)),
+          () => {
+            // Small pause between numbers so counting doesn't feel rushed
+            setTimeout(() => speakText(String(secondsRemaining), 0.8), 80);
+          },
           delay,
         );
         return () => clearTimeout(timer);
@@ -303,7 +335,7 @@ export default function BreathingPlayer({
           setTimerCompleted(true);
           setTimerStarted(false);
           if (audioEnabled) {
-            setTimeout(() => speakText("Time's up. Great job."), 200);
+            setTimeout(() => speakText("Time's up. Great job.", 0.85), 200);
           }
           return 0;
         }
@@ -372,7 +404,7 @@ export default function BreathingPlayer({
     setTimerPaused(false);
     lastChimeMinute.current = -1;
     if (audioEnabled) {
-      setTimeout(() => speakText("Begin"), 200);
+      setTimeout(() => speakText("Begin", 0.85), 200);
     }
   };
 
