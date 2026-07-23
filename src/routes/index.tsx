@@ -8,9 +8,21 @@ function Home() {
   return (
     <div className="min-h-dvh bg-gradient-to-b from-stone-50 via-white to-stone-50">
       {/* Hero */}
-      <header className="relative overflow-hidden px-6 pt-20 pb-16 sm:px-8 sm:pt-28 sm:pb-24">
+      <header className="relative overflow-hidden px-6 pt-6 pb-16 sm:px-8 sm:pt-8 sm:pb-24">
         <div className="absolute inset-0 bg-gradient-to-br from-emerald-50/60 via-amber-50/30 to-sky-50/40 pointer-events-none" />
-        <div className="relative mx-auto max-w-4xl text-center">
+        {/* Top nav */}
+        <div className="relative mx-auto max-w-5xl flex items-center justify-between">
+          <a href="/" className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            🧘 Reclaim
+          </a>
+          <a
+            href="/auth/login"
+            className="inline-flex items-center gap-1.5 rounded-xl border border-gray-300 bg-white/70 px-5 py-2.5 text-sm font-semibold text-gray-700 shadow-sm backdrop-blur transition hover:bg-white hover:border-gray-400 hover:text-gray-900 active:scale-[0.98]"
+          >
+            Sign In
+          </a>
+        </div>
+        <div className="relative mx-auto max-w-4xl text-center mt-14 sm:mt-20">
           <span className="inline-flex items-center gap-2 rounded-full bg-emerald-100/80 px-4 py-1.5 text-sm font-medium text-emerald-800 backdrop-blur">
             🧘 Your calendar companion
           </span>
